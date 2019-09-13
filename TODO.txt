@@ -1,0 +1,54 @@
+
+
+resources - some named float values
+
+variables - global variables like config options, for example n,k in erasure-coding config
+    variables can be used in equations in constraints
+
+Object
+    Categories (list of lists of strings)
+    Name (type, leaf in category list)
+    Requires
+        objects - only context-specific requirement
+        resources
+            global
+                for example S3 throughput
+            context-specific
+                for example CPU and RAM
+    Provides
+        objects - objects like sockets or 3.5" slots can be used by other objects like cpu or hdd
+        resources - always context-specific but also included in gobal sum for this resource
+
+        hw topology object:
+            like chassis can be considered as server or node and then SW entities "live" in servers not in chassis
+
+database of available objects
+
+HW topology - contexts for constraints
+    for example: cluster -> rack -> server -> cpu -> etc...
+    resources "live" in each context
+    upper level has sum of resources and objects of lower level
+
+constraints[]
+    constraint
+        context: HW topology node
+        predicate:
+            equalities:
+                for example: replication_factor = (n+k)/n
+            inequalities:
+                for example: provided_througput >= required_troughput
+            select value from list:
+                for example: n = 4 | 8
+        policy: required | preferred
+
+requirements:
+    total global resources - sum of all resources, like available space on rbd ob Ceph
+    SW entities - objects: type and number of objects of same type
+        automatic constraints:
+            SW entity is atomic and can't be splitted into several servers
+            so required that single server can't have less RAM and CPU that required for some SW entity
+    optimization requirement
+        for example total price or total power or total throughput
+
+
+
