@@ -1,5 +1,167 @@
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+=============================================================================================================
+
+Implementaion:
+
+Provided objects are resources
+
+Object has description and uuid
+From object description you can create object with uuid
+
+All child objects live in one owning collection - objects, links are implemented by uuid
+
+All objects by uuid - helper non-owning collection
+
+Links to childs (those who use object)
+Links to parents - to objects where this object use provided objects or resoources.
+Links to parents: uuid + name of link object + link object uuid
+
+Resources are in resources dict
+
+Uplinks are in uplinks dict
+
+Uses: list of links to objects where resources are used
+Difficult to understand that resource is provided from object to some upper level object like hdd provides value to host
+and other object uses resource not from hdd but from host, where resource is aggregated.
+
+Object where other objects uses resources (for example host) has total and used dicts for objects and resources
+total comes from provided value or from property query
+used comes from users dict
+
+
+
+object: {
+    uuid:
+    type: # description from it was created
+    
+    parent: # uuid of parent object where this object is in objects list
+    objects: [] # owning list of child objects
+
+    resources: {
+        total: {},
+        used: {}
+    }
+
+    uses: {<resource_name>:{}} # objects where this object uses resources by resource name, uplinks
+    users: {<resource_name>:[]} # objects that use this object by resource that is consumed
+}
+
+Automatically: if resource is natively integer - like slots - then number of users in this slot's list can't be greater than number of available slots
+and each user uses only one slot.
+
+
+Selectors, Query and Constraints are defined on implementation of tree, not on descriptions of objects' types.
+
+
+Selector: path query and logical predicate on facts that object belongs to categories
+    path:
+        relative or absolute
+            relative starts with ./ or ../
+        single level or depth-search
+    predicate
+        like: hw.storage & !hw.storage.nvme
+
+
+Query:
+    select nodes with selector and perform function on all objects (like take ) and then summarize output
+    like: select(../../, recursive=true, hw.storage & !hw.storage.nvme) | .volume | sum
+
+
+
+Constraint:
+
+
+
+
+
+========================================================================================================================
+
+Object Type:
+    Categories:
+        list of lists of strings
+        one object can be in different categories
+        can be used like labels or tags in queries
+        like hardware->storage->ssd
+    Name:
+        type, leaf in category list, id, unique identifyer that completely identifies object
+        like cpu model
+    Requres:
+        list of requirements:
+            query: can use values directly, like hdd volume, or can use properties of higher level objects, like host hdd volume
+            constraint:
+    Provides:
+        list of provided entities:
+            name: can be name of resource, like volume, or name of object, like ddr4_slot
+                name stil is unique id of object or resource: ram, cpu_mhz, ddr3_slot, ddr4_slot
+                name contains measurement unit to be unique
+            value: always integer (hz, bytes, bits, units, ...)
+            unit: additional preperty for human-readable output - MiB, GHz, etc...
+    Properties:
+        list of pairs name:query
+            query can be calculated and it's value cached
+            like number of hdd disks or volume of hdd disks on host
+
+
+Properties can be added to objects globally with selector.
+    Like: you don't want to copy query of number of hdd disks to each chassis or hosts.
+    Instead you can define property by selector (that define location), name and query.
+
+Property itself contains type selector by predicate and query itself contains selector, but with path.
+
+Software object host (or OS), for example can use RAID of for example min 2 ssd.
+
+Sheduler does not required to select any specified location where to put object like Host,
+instead it selects place where all requirements (like disk volume, cpu, ram, net, ...) are provided in respect to path.
+(the only question is to look for nearest place or specify depth of path)
+Simply the Host requres 16G ram and 4 cpu_core_gghz:
+    - if requirement is nearest node and resources anywhere in child nodes - so Host can live only in motherboard
+    - if requirement is resources are in 2 steps down (motherboard->slot->ram, motherboard->socket->cpu) - so Host can live only in motherboard
+    - if it requires disk - Host can live only in chassis
+
+Q: How to connect SATA slot from motherboard and 3.5" slot from chassis to HDD disk?
+chassis
+|
+`-- 3.5"_slot--\
+|              |
+`--------- HDD_disk
+|           |
+`-- MB      |
+    |       |
+    `-- SATA slot
+A: HDD_disk is phisically located in chassis, isn't it?
+    So it requires 3.5" slot and SATA slot on MB one level down
+
+
+collection of objects' types (or prototypes)
+    you can clone object and link it somewhere in tree
+    then calculate it's properties
+
+Unit: defines conversion from property raw integer value to human-readable pritable string
+    like: 10000000234546 bytes -> 9.09 TiB
+    rounding rules for printing are not related to calculations
+
+For simplisity - environement is always a tree with single root.
+
+
+
+
+
+========================================================================================================================
+
 resources - some named float values
 
 variables - global variables like config options, for example n,k in erasure-coding config
