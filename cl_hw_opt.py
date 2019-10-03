@@ -5,6 +5,7 @@ from typing import List, Dict, Tuple, Callable, Any
 import lark
 from pprint import pprint
 from inspect import signature
+import time
 
 """
 =====================================================================================================
@@ -82,9 +83,11 @@ def cat_contains_subcat_from_list(cat: List[str], sub_cat_list: List[List[str]])
 # ====================================================================================================
 #
 
-#TODO: WTF? How I've get here? Repeat it again and write a writeup.
-#TODO: Generator for benchmarking
-#TODO: lambda compilation vs interpretation, compare implementation and performance 
+#TODO: WTF? How I've get here? Repeat it again and write a writeup. 
+#      In Python, C++ and Haskell.
+#      Lambda compilation vs interpretation, compare implementation and performance.
+
+#TODO: Generator from grammar, random node selection and random/fixed limited depth.
 #TODO: generate grammar from ops with rules like: infix, prefix, postfix, left/right-accociative, with/without parentheses, etc...
 
 
@@ -93,17 +96,40 @@ def cat_contains_subcat_from_list(cat: List[str], sub_cat_list: List[List[str]])
 _id = lambda x: x
 
 
+
+#TODO: compile_tree and compile_token ???
+
 def compile_tree(ops, tree):
-    return ops[tree.data](ops, tree)
+    op_name = tree.data if isinstance(tree, lark.Tree) else tree
+    return ops[op_name](ops, tree)
 
 
 def compile_func_call(func, compile_arg, ops, tree):
     """
         Returns lambda that call func from results of compiled functions of tree.children
     """
-    arg_funcs = [compile_arg(ops, tree.children[i]) for i in range(len(signature(func).parameters))]
+    sig = signature(func)
+
+    #TODO: 2 types of leafs (Token) handling:
+    # 1-st - find it in ops and return function directly
+    # 2-nd - compile function from token value, like get var value or return number
+    if isinstance(tree, lark.Token):
+        return func
+
+    arity = len(sig.parameters)
+    if arity != len(tree.children):
+        raise f'ERROR: compile_func_call: function "{tree.data}" reqires {arity} arguments, provided {len(tree.children)}'
+
+    arg_funcs = [compile_arg(ops, arg) for arg in tree.children]
+
     if func == _id:
+        # optimization :)
         return arg_funcs[0]
+
+    if sig.return_annotation == Callable:
+        # Functor
+        return func(*arg_funcs)
+
     return (lambda f, *funcs: lambda x: f(*(g(x) for g in funcs)))(func, *arg_funcs)
 
 
@@ -131,6 +157,8 @@ def compile(compiler, text):
     return compile_tree(compile_ops, tree)
 
 
+#TODO: Linearize calculation of same functions on one level, like pipe composition
+
 #
 # ====================================================================================================
 # Interpretation
@@ -141,7 +169,9 @@ def interpret_tree(ops, env, tree):
     """
         Interpretation works directly with same ops as compilation, without generate_compiler_ops().
     """
-    value = ops[tree.data]
+    op_name = tree.data if isinstance(tree, lark.Tree) else tree
+
+    value = ops[op_name]
 
     if callable(value):
         func = value
@@ -151,12 +181,21 @@ def interpret_tree(ops, env, tree):
         func = value[0]
         interpret_arg = lambda ops, env, tree: value[1](ops, tree)(env)
 
-    arity = len(signature(func).parameters)
+    if isinstance(tree, lark.Token):
+        return func(env)
+
+    sig = signature(func)
+    arity = len(sig.parameters)
     if arity != len(tree.children):
         raise f'ERROR: interpret_tree: function "{tree.data}" invalid number of arguments: {len(tree.children)} != {arity}'
 
-    args = [interpret_arg(ops, env, subtree) for subtree in tree.children]
-    return func(*args)
+    if sig.return_annotation == Callable:
+        # Functor - pass carried interpret_tree, not results as arguments to functor
+        args = [(lambda _ops, _tree: lambda x: interpret_tree(_ops, x, _tree))(ops, subtree) for subtree in tree.children]
+        return func(*args)(env)
+    else:
+        args = [interpret_arg(ops, env, subtree) for subtree in tree.children]
+        return func(*args)
 
 
 def interpret(interpreter, text, env):
@@ -170,15 +209,35 @@ def interpret(interpreter, text, env):
 # Test
 # ====================================================================================================
 #
-
+ 
 def test(ops, parser, text, env, result):
-    compiler = (generate_compiler_ops(ops), parser)
-    interpreter = (ops, parser)
-    f = compile(compiler, text)
+    compiler_ops = generate_compiler_ops(ops)
+
+    start = time.process_time()
+    tree = parser.parse(text)
+    parse_elapsed = time.process_time() - start
+
+    start = time.process_time()
+    f = compile_tree(compiler_ops, tree)
+    compile_elapsed = time.process_time() - start
+
+    start = time.process_time()
     r = f(env)
+    exec_elapsed = time.process_time() - start
+
     assert(result == r)
-    r = interpret(interpreter, text, env)
+
+    start = time.process_time()
+    r = interpret_tree(ops, env, tree)
+    interpret_elapsed = time.process_time() - start
+
     assert(result == r)
+
+    print(f"parse: {parse_elapsed}, " 
+          f"compile: {compile_elapsed}, "
+          f"exec: {exec_elapsed}, "
+          f"interpret: {interpret_elapsed}, "
+          f"speedup: {interpret_elapsed/exec_elapsed}")
 
 #
 # ====================================================================================================
@@ -416,12 +475,60 @@ def test_arith_logic(text, env, result):
 
 test_arith_logic("a < b and (a == b or a * c >= b)", {'a': 100, 'b': 200, 'c': 3}, True)
 test_arith_logic("a < b and a == b or a * c >= b", {'a': 100, 'b': 200, 'c': 3}, True)
+test_arith_logic(
+    "f * g + e > d and a < b and (a == b or a * c >= b)",
+    {'a': 100, 'b': 200, 'c': 3, 'd': 9768, 'e': 2334, 'g': -1, 'f': -5.5},
+    False
+)
+
+#
+# ====================================================================================================
+# Pipe notation with functions
+# ====================================================================================================
+#
+
+PIPES_AND_FUNCTIONS_GRAMMAR = """
+?composition: function
+  | function "|" composition
+
+?function: CNAME
+  | "(" composition ")"
+
+%import common.CNAME
+%import common.WS_INLINE
+%import common.NEWLINE
+
+%ignore WS_INLINE
+%ignore NEWLINE
+"""
+
+pipes_and_functions_parser = lark.Lark(PIPES_AND_FUNCTIONS_GRAMMAR, start="composition")
+
+def compose(g, f) -> Callable:
+    return lambda x: f(g(x))
+
+#TODO: Can I use functors for compilation?
+pipes_and_functions_ops = {
+    "composition": compose,
+    "add_1": lambda x: x + 1,
+    "mul_2": lambda x: x * 2,
+    "neg": lambda x: -x,
+}
+
+pipes_and_functions_compile_ops = generate_compiler_ops(pipes_and_functions_ops)
+
+def compile_pipes_and_functions(text: str):
+    return compile((pipes_and_functions_compile_ops, pipes_and_functions_parser), text)
+
+f = compile_pipes_and_functions("|\n".join(["(add_1 | mul_2 | neg)"]*200))
+
+print(f(1))
+
+def test_pipes_and_functions(text, env, result):
+    test(pipes_and_functions_ops, pipes_and_functions_parser, text, env, result)
 
 
-
-
-
-
+test_pipes_and_functions("|".join(["(add_1 | mul_2 | neg)"]*200), 1, 2678230073764983792569936820568604337537004989637988058835626)
 
 
 """
