@@ -4,6 +4,7 @@ import uuid
 from typing import List, Dict, Tuple, Callable, Any
 import lark
 from pprint import pprint
+from inspect import signature
 
 """
 =====================================================================================================
@@ -75,8 +76,109 @@ def cat_contains_subcat_from_list(cat: List[str], sub_cat_list: List[List[str]])
             return True
     return False
 
-def gen_cat_predicate_eval_single(cat: List[str]) -> Callable[[List[List[str]]], bool]:
-    return (lambda cap_cat: lambda x: cat_contains_subcat_from_list(cap_cat, x))(cat)
+#
+# ====================================================================================================
+# Compile tree into function from one argument with lambdas
+# ====================================================================================================
+#
+
+#TODO: WTF? How I've get here? Repeat it again and write a writeup.
+#TODO: Generator for benchmarking
+#TODO: lambda compilation vs interpretation, compare implementation and performance 
+#TODO: generate grammar from ops with rules like: infix, prefix, postfix, left/right-accociative, with/without parentheses, etc...
+
+
+#TODO: Pack grammar,ops,start_symbol into language and add wrap_language(outer_lang, iner_lang) function
+
+_id = lambda x: x
+
+
+def compile_tree(ops, tree):
+    return ops[tree.data](ops, tree)
+
+
+def compile_func_call(func, compile_arg, ops, tree):
+    """
+        Returns lambda that call func from results of compiled functions of tree.children
+    """
+    arg_funcs = [compile_arg(ops, tree.children[i]) for i in range(len(signature(func).parameters))]
+    if func == _id:
+        return arg_funcs[0]
+    return (lambda f, *funcs: lambda x: f(*(g(x) for g in funcs)))(func, *arg_funcs)
+
+
+def generate_compiler_ops(ops_table: Dict[str, Callable]):
+    """
+        Generates functions that will be called from compile_tree() for compilation of tree nodes.
+    """
+    ops = {}
+    for name, value in ops_table.items():
+        if callable(value):
+            func = value
+            compile_arg = compile_tree
+        else: 
+            # value is tuple
+            func = value[0]
+            compile_arg = value[1]
+        ops[name] = (lambda f, c_arg: lambda ops, tree: compile_func_call(f, c_arg, ops, tree))(func, compile_arg)
+    return ops
+
+
+def compile(compiler, text):
+    compile_ops, parser = compiler
+    tree = parser.parse(text)
+    #print(tree.pretty())
+    return compile_tree(compile_ops, tree)
+
+
+#
+# ====================================================================================================
+# Interpretation
+# ====================================================================================================
+#
+
+def interpret_tree(ops, env, tree):
+    """
+        Interpretation works directly with same ops as compilation, without generate_compiler_ops().
+    """
+    value = ops[tree.data]
+
+    if callable(value):
+        func = value
+        interpret_arg = interpret_tree
+    else: 
+        # value is tuple
+        func = value[0]
+        interpret_arg = lambda ops, env, tree: value[1](ops, tree)(env)
+
+    arity = len(signature(func).parameters)
+    if arity != len(tree.children):
+        raise f'ERROR: interpret_tree: function "{tree.data}" invalid number of arguments: {len(tree.children)} != {arity}'
+
+    args = [interpret_arg(ops, env, subtree) for subtree in tree.children]
+    return func(*args)
+
+
+def interpret(interpreter, text, env):
+    ops, parser = interpreter
+    tree = parser.parse(text)
+    #print(tree.pretty())
+    return interpret_tree(ops, env, tree)
+
+#
+# ====================================================================================================
+# Test
+# ====================================================================================================
+#
+
+def test(ops, parser, text, env, result):
+    compiler = (generate_compiler_ops(ops), parser)
+    interpreter = (ops, parser)
+    f = compile(compiler, text)
+    r = f(env)
+    assert(result == r)
+    r = interpret(interpreter, text, env)
+    assert(result == r)
 
 #
 # ====================================================================================================
@@ -96,36 +198,22 @@ LOGIC_GRAMMAR = """
 ?neg: item
   | "not" item         -> not
 
-?item: NAME            -> call
+?item: NAME            -> {}
   | "(" dis ")"
 
 NAME: /{}/
 
 %import common.WS
 %ignore WS
-""".strip()
+"""
 
-def get_logic_grammar_parser(call_regex):
-   return lark.Lark(LOGIC_GRAMMAR.format(call_regex))
+def get_logic_grammar_parser(name, regex):
+   return lark.Lark(LOGIC_GRAMMAR.format(name, regex))
 
-#TODO: optimize for fast eval of logical ops for multiple args, like "a or b or c or d"
-
-def compile_predicate(tree, ops) -> Callable[[Any], bool]:
-    return ops[tree.data](tree, ops)
-
-def compile_1_arg_func(func, tree, ops) -> Callable[[Any], bool]:
-    p = compile_predicate(tree.children[0], ops)
-    return (lambda a, f: lambda x: f(a(x)))(p, func)
-
-def compile_2_arg_func(func, tree, ops) -> Callable[[Any], bool]:
-    lhs = compile_predicate(tree.children[0], ops)
-    rhs = compile_predicate(tree.children[1], ops)
-    return (lambda lhs, rhs, f: lambda x: f(lhs(x), rhs(x)))(lhs, rhs, func)
-
-default_logic_predicate_ops = {
-    "or": lambda tree, ops: compile_2_arg_func(lambda a, b: a or b, tree, ops),
-    "and": lambda tree, ops: compile_2_arg_func(lambda a, b: a and b, tree, ops),
-    "not": lambda tree, ops: compile_1_arg_func(lambda b: not b, tree, ops),
+logic_predicate_ops = {
+    "or": lambda a, b: a or b,
+    "and": lambda a, b: a and b,
+    "not": lambda b: not b,
 }
 
 #
@@ -134,18 +222,39 @@ default_logic_predicate_ops = {
 # ====================================================================================================
 #
 
-cat_logic_grammar_parser = get_logic_grammar_parser(r"([a-zA-Z0-9_]+\.)*[a-zA-Z0-9_]+")
+# merge grammar
+cat_logic_grammar_parser = get_logic_grammar_parser("call", r"([a-zA-Z0-9_]+\.)*[a-zA-Z0-9_]+")
 
-def compile_cat_predicate(p: str) -> Callable[[List[List[str]]], bool]:
-    tree = cat_logic_grammar_parser.parse(p)
-    ops = {
-        **default_logic_predicate_ops,
-        "call": lambda tree, ops: gen_cat_predicate_eval_single(parse_cat(tree.children[0]))
-    }
-    return compile_predicate(tree, ops)
+def compile_cat_predicate_terminal_symbol(ops, tree):
+    """
+        Returns function from x that represent match of x with category, represented by tree.
+    """
+    return (lambda cap_cat: lambda x: cat_contains_subcat_from_list(cap_cat, x))(parse_cat(tree)) 
+
+cat_ops = {
+    "call": (_id, compile_cat_predicate_terminal_symbol)
+}
+
+# merge compile_ops
+cat_predicate_ops = {
+    **logic_predicate_ops,
+    **cat_ops
+}
+
+cat_predicate_compile_ops = generate_compiler_ops(cat_predicate_ops)
+
+def compile_cat_predicate(p: str):
+    return compile((cat_predicate_compile_ops, cat_logic_grammar_parser), p)
+
+def interpret_cat_predicate(p: str, env):
+    return interpret((cat_predicate_ops, cat_logic_grammar_parser), p, env)
 
 
 assert(compile_cat_predicate("a.b")(parse_categories("a.b.c, x.y.z")))
+assert(interpret_cat_predicate("a.b", parse_categories("a.b.c, x.y.z")))
+
+assert(compile_cat_predicate("a.b and x.y")(parse_categories("a.b.c, x.y.z")))
+assert(interpret_cat_predicate("a.b and x.y", parse_categories("a.b.c, x.y.z")))
 
 c = parse_categories("hw.disk.type.ssd, hw.vendor.intel, hw.disk.func.discard")
 p = compile_cat_predicate("hw.disk and not hw.disk.type.nvme or not hw.disk.func.discard and hw.vendor.intel")
@@ -157,6 +266,277 @@ assert(not p(c))
 
 assert(compile_cat_predicate("a.b and not (x.y.f or a.b.z) and not x.y.t")(parse_categories("a.b.c, x.y.z")))
 assert(not compile_cat_predicate("a.b.c.d or x.y.z.r or not x.y.z")(parse_categories("a.b.c, x.y.z")))
+
+
+#
+# ====================================================================================================
+# Arithmetic functions on environment with variable values.
+# ====================================================================================================
+#
+
+ARITHMETIC_GRAMMAR = """
+?sum: product
+  | sum "+" product       -> add
+  | sum "-" product       -> sub
+
+?product: power
+  | product "*" power     -> mul
+  | product "/" power     -> div
+
+?power: value
+  | value "**" power      -> pow
+
+?value: NUMBER            -> number
+  | NAME                  -> var
+  | "-" value             -> neg
+  | "(" sum ")"
+
+%import common.CNAME -> NAME
+%import common.NUMBER
+%import common.WS_INLINE
+
+%ignore WS_INLINE
+"""
+
+arithmetic_parser = lark.Lark(ARITHMETIC_GRAMMAR, start="sum")
+
+# Number is function that returns this number ;)
+def compile_number(ops, tree):
+    """
+        Returns function from x that returns value of number.
+    """
+    return (lambda N: lambda x: N)(float(tree)) 
+
+def compile_var(ops, tree):
+    return (lambda var_name: lambda x: x[var_name])(tree) 
+
+arithmetic_ops = {
+    "add": lambda x, y: x + y,
+    "sub": lambda x, y: x - y,
+    "mul": lambda x, y: x * y,
+    "div": lambda x, y: x / y,
+    "neg": lambda x: -x,
+    "pow": lambda x, y: x ** y,
+    "number": (_id, compile_number),
+    "var": (_id, compile_var),
+}
+
+arithmetic_compile_ops = generate_compiler_ops(arithmetic_ops)
+
+def compile_arithmetic(text: str):
+    return compile((arithmetic_compile_ops, arithmetic_parser), text)
+
+
+assert(0 == compile_arithmetic("0")({}))
+assert(-1 == compile_arithmetic("-1")({}))
+assert(1.1 == compile_arithmetic("1.1")({}))
+
+test(arithmetic_ops, arithmetic_parser, "x * 2 + -y", {'x': 1, 'y': 2}, 0)
+test(arithmetic_ops, arithmetic_parser, "x / 2 - 1 / y", {'x': 1, 'y': 2}, 0)
+test(arithmetic_ops, arithmetic_parser, "x ** y - 1", {'x': 1, 'y': 2}, 0)
+
+#
+# ====================================================================================================
+# Arithmetic predicates on environment with variable values.
+# ====================================================================================================
+#
+
+# Wrapping languages by concat grammars and ops dicts
+
+ARITHMETIC_PREDICATES_GRAMMAR = """
+?arithmetic_predicate: sum
+  | arithmetic_predicate ">"  sum          -> gt
+  | arithmetic_predicate ">=" sum          -> gte
+  | arithmetic_predicate "<"  sum          -> lt
+  | arithmetic_predicate "<=" sum          -> lte
+  | arithmetic_predicate "==" sum          -> eq
+  | arithmetic_predicate "!=" sum          -> neq
+""" + ARITHMETIC_GRAMMAR
+
+arithmetic_predicate_parser = lark.Lark(ARITHMETIC_PREDICATES_GRAMMAR, start="arithmetic_predicate")
+
+arithmetic_predicate_ops = {
+    **arithmetic_ops,
+    "gt": lambda a, b: a > b,
+    "gte": lambda a, b: a >= b,
+    "lt": lambda a, b: a < b,
+    "lte": lambda a, b: a <= b,
+    "eq": lambda a, b: a == b,
+    "neq": lambda a, b: a != b,
+}
+
+arithmetic_predicate_compile_ops = generate_compiler_ops(arithmetic_predicate_ops)
+
+def compile_arithmetic_predicate(text: str):
+    return compile((arithmetic_predicate_compile_ops, arithmetic_predicate_parser), text)
+
+
+assert(compile_arithmetic_predicate("0 == 0")({}))
+assert(compile_arithmetic_predicate("0 != -1")({}))
+assert(compile_arithmetic_predicate("0 > -1")({}))
+assert(compile_arithmetic_predicate("2 >= 2")({}))
+assert(compile_arithmetic_predicate("-2 < 2")({}))
+assert(compile_arithmetic_predicate("0 <= 0")({}))
+test(arithmetic_predicate_ops, arithmetic_predicate_parser, "(a ** 2 ** 2 - 10) > b * (a ** (c / 2))", {'a': 100, 'b': 200, 'c': 3}, True)
+
+#
+# ====================================================================================================
+# Arithmetic calculations and predicates and logic functions on environment with variable values.
+# ====================================================================================================
+#
+
+ARITHMETIC_AND_LOGIC_PREDICATES_GRAMMAR = """
+?disjunction: conjunction
+  | disjunction "or" conjunction       -> or
+
+?conjunction: negation
+  | conjunction "and" negation         -> and
+
+?negation: arithmetic_predicate
+  | "not" arithmetic_predicate         -> not
+  | "(" disjunction ")"
+""" + ARITHMETIC_PREDICATES_GRAMMAR
+
+arithmetic_and_logic_predicate_parser = lark.Lark(ARITHMETIC_AND_LOGIC_PREDICATES_GRAMMAR, start="disjunction")
+
+arithmetic_and_logic_predicate_ops = {
+    **arithmetic_predicate_ops,
+    "or": lambda a, b: a or b,
+    "and": lambda a, b: a and b,
+    "not": lambda b: not b,
+}
+
+arithmetic_and_logic_predicate_compile_ops = generate_compiler_ops(arithmetic_and_logic_predicate_ops)
+
+def compile_arithmetic_and_logic_predicate(text: str):
+    return compile((arithmetic_and_logic_predicate_compile_ops, arithmetic_and_logic_predicate_parser), text)
+
+def test_arith_logic(text, env, result):
+    test(arithmetic_and_logic_predicate_ops, arithmetic_and_logic_predicate_parser, text, env, result)
+
+test_arith_logic("a < b and (a == b or a * c >= b)", {'a': 100, 'b': 200, 'c': 3}, True)
+test_arith_logic("a < b and a == b or a * c >= b", {'a': 100, 'b': 200, 'c': 3}, True)
+
+
+
+
+
+
+
+
+"""
+=====================================================================================================
+Query
+
+    Query vs. Equation?
+    Query is functional processing pipe starting on current object.
+    Equation is named formula that contains arithmetic operations, resource values on current object or global root.
+
+Pipe notation
+
+    List of functions separated with vertical bar "|".
+    Each function receive single argument or list and return single object, value or list.
+    To apply single-argument function to list - explicitly use "map".
+    Argument of first function is single current object.
+    Result of previous function pass to next one.
+    Output of last function is result of the query.
+
+Parentheses
+
+    Functions linked with pipe represent one function.
+    So just surround them with parentheses - it became single function that can be used with map or recursive.
+
+Path selector
+
+    Path selector cat takes objects or values.
+
+    Current object is argument for first function automatically - not required special sign for current object.
+    / - root object
+    .parent, ../ - parent object
+    .objects, .[] - child objects
+    .source.<res_name>, .src.<res_name> - source of <res_name> for this object
+    .users.<res_name> - users of <res_name> of this object
+    .resources.<res_name>, .res.<res_name> - value of total of <res_name>
+    .used.<res_name> - value of used of <res_name>
+    .free.<res_name> - value of free of <res_name>
+
+Map functor
+
+    If function return list of objects to apply next function to every object - use map:
+    Example - get cpu from every child object: .[] | map .res.cpu
+
+Join function
+
+    If mapped function return list for every object - then you got list of lists into output.
+    Join converts it into simple flat list.
+    It does nothing if not required.
+    Example - get cpu users of from every child object: .[] | map .users.cpu | join
+    TODO: consider apply join by default.
+
+Predicate
+
+    Function that returns bool.
+
+    Can use logic operations on top of boolean functions.
+
+Arithmetic function from values on single object
+
+    Can use fileds of input object or input value.
+    Input value marked with underscore: "_".
+    Example: _ + 10
+
+Filter functor
+
+    Applies to list of objects and throw out objects that does not match predicate function.
+
+Functions on lists:
+    count
+    sum
+    min
+    max
+
+Recursive search
+
+    Path selector returns one object or list of objects or value or list of values.
+    If it is required to got through depth of links - use recursive search.
+    It recursively applies provided function to it's output while output is not empty.
+    And the whole function returns all objects that match predicate from every level.
+    Recursive functor takes two arguments:
+    1-st is required - function that will be applied recursively
+    2-nd is optional - filter predicate
+
+=====================================================================================================
+""" 
+
+#TODO: Do not undestand how to use jq or jinja2 or any other embeddable lang here for queries
+# So first implement simple primitive hand-made one and then find a way to use others.
+
+
+class Value:
+    """
+        Consider equation V = n*(x - y)/(z + w) and constraint V >= 10.
+        If V will be calculated into numerical value and then constraint checked,
+        then we get no information about what free variable values we should increase or decrease
+        to finally match the constraint.
+
+        Then one way (that I see) is to link result value with all it's sources with labeled linkes.
+        Labels are proportionality direction: direct or inverse.
+        Also can be added labels like proportionality rank: linear, polynomial, exponential.
+        Using this links (I hope) solver will be able to infer what free variable should be increased or decreased.
+        And in this application all modifications of free variables, like add one more hdd disk,
+        will have cost in terms of optimization target value, like financial cost.
+        So solver (again, I hope) will be able to select modification that makes maximum(impact/cost). 
+
+    """
+    def __init__(self):
+        pass
+
+
+def compile_query(q: str):
+    pass
+
+
+
 
 
 """
@@ -259,159 +639,6 @@ class Object:
 objects_by_uuid : Dict[uuid.UUID, Object] = {}
 
 
-#TODO: Do not undestand how to use jq or jinja2 or any other embeddable lang here for queries
-# So first implement simple primitive hand-made one and then find a way to use others.
-
-
-"""
-=====================================================================================================
-Query
-
-    Query vs. Equation?
-    Query is functional processing pipe starting on current object.
-    Equation is named formula that contains arithmetic operations, resource values on current object or global root.
-
-Pipe notation
-
-    List of functions separated with vertical bar "|".
-    Each function receive single argument or list and return single object, value or list.
-    To apply single-argument function to list - explicitly use "map".
-    Argument of first function is single current object.
-    Result of previous function pass to next one.
-    Output of last function is result of the query.
-
-Parentheses
-
-    Functions linked with pipe represent one function.
-    So just surround them with parentheses - it became single function that can be used with map or recursive.
-
-Path selector
-
-    Path selector cat takes objects or values.
-
-    Current object is argument for first function automatically - not required special sign for current object.
-    / - root object
-    .parent, ../ - parent object
-    .objects, .[] - child objects
-    .source.<res_name>, .src.<res_name> - source of <res_name> for this object
-    .users.<res_name> - users of <res_name> of this object
-    .resources.<res_name>, .res.<res_name> - value of total of <res_name>
-    .used.<res_name> - value of used of <res_name>
-    .free.<res_name> - value of free of <res_name>
-
-Map functor
-
-    If function return list of objects to apply next function to every object - use map:
-    Example - get cpu from every child object: .[] | map .res.cpu
-
-Join function
-
-    If mapped function return list for every object - then you got list of lists into output.
-    Join converts it into simple flat list.
-    It does nothing if not required.
-    Example - get cpu users of from every child object: .[] | map .users.cpu | join
-    TODO: consider apply join by default.
-
-Predicate
-
-
-Arithmetic function from values on single object
-
-
-
-
-
-Filter functor
-
-
-
-Functions on lists:
-    count
-    sum
-    min
-    max
-
-
-Recursive search
-
-    Path selector returns one object or list of objects or value or list of values.
-    If it is required to got through depth of links - use recursive search.
-    It recursively applies provided function to it's output while output is not empty.
-    And the whole function returns all objects that match predicate from every level.
-    Recursive functor takes two arguments:
-    1-st is required - function that will be applied recursively
-    2-nd is optional - filter predicate
-
-
-
-
-
-
-
-
-=====================================================================================================
-
-Tree Element Selector (object selector)
-
-    Selector: path specifyer + type predicate + traverse mode + select mode, |-separated, repeatable
-
-    Selector always starts on it's own context:
-    if it is in property of object - then starts from this object
-
-    Type predicates are already implemented
-    Format: filter <predicate>
-
-    Path: starts with dot and then one of [parent, objects, uses[<res_name>], users[<res_name>]]
-    Examples: .parent, .objects, .uses[ram], .users[ram]
-
-    Traverse mode: default or deapth-search
-
-
-    Select mode: Single element (any of them) or all elements.
-    Any element - for requirements.
-    All elements - for summarization on resources.
-    Default is all elements.
-    For any element - use word any. 
-
-Query language
-
-    Query: object selector + (optional) resource name + function, |-separated
-
-    Resource getter format: get <res_name>
-
-
-
-
-    query for resources - in properties
-    query for object - in requirement
-
-=====================================================================================================
-""" 
-
-
-
-class Value:
-    """
-        Consider equation V = n*(x - y)/(z + w) and constraint V >= 10.
-        If V will be calculated into numerical value and then constraint checked,
-        then we get no information about what free variable values we should increase or decrease
-        to finally match the constraint.
-
-        Then one way (that I see) is to link result value with all it's sources with labeled linkes.
-        Labels are proportionality direction: direct or inverse.
-        Also can be added labels like proportionality rank: linear, polynomial, exponential.
-        Using this links (I hope) solver will be able to infer what free variable should be increased or decreased.
-        And in this application all modifications of free variables, like add one more hdd disk,
-        will have cost in terms of optimization target value, like financial cost.
-        So solver (again, I hope) will be able to select modification that makes maximum(impact/cost). 
-
-    """
-    def __init__(self):
-        pass
-
-
-def compile_query(q: str):
-    pass
 
 
 
