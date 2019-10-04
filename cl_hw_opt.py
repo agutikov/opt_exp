@@ -658,7 +658,7 @@ f = compile_pipes_and_functions("|\n".join(["(add_1 | mul_2 | neg)"]*200))
 
 test_pipes_and_functions = lambda *args, **kvargs: test(pipes_and_functions_ops, pipes_and_functions_parser, *args, **kvargs)
 
-test_pipes_and_functions("add_1 | mul_2 | neg", 1, 0, verbose=True, debug=True)
+test_pipes_and_functions("add_1 | mul_2 | neg", 1, -4, verbose=False)
 
 if False:
     test_pipes_and_functions("|".join(["(add_1 | mul_2 | neg)"]*200), 1, 2678230073764983792569936820568604337537004989637988058835626)
@@ -671,8 +671,6 @@ if False:
 # Arithmetic functions from one argument and Functors.
 # ====================================================================================================
 #
-
-#TODO: Implement functions definition like (_ + 3) and other functors
 
 ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
 ?composition: sum
@@ -694,7 +692,6 @@ ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
   | "-" power             -> neg
   | "(" sum ")"
 
-%import common.CNAME
 %import common.NUMBER
 
 %import common.WS_INLINE
@@ -703,7 +700,14 @@ ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
 %ignore NEWLINE
 """
 
-arithmetic_and_functors_parser = lark.Lark(ARITHMETIC_AND_FUNCTORS_GRAMMAR, start="sum")
+arithmetic_and_functors_parser = lark.Lark(ARITHMETIC_AND_FUNCTORS_GRAMMAR, start="composition")
+
+def map(f) -> Callable:
+    return lambda x: [f(el) for el in x]
+
+#TODO: variadic functor fmap
+def fmap2(f1, f2) -> Callable:
+    return lambda x: [f1(x), f2(x)]
 
 arithmetic_and_functors_ops = {
     "add": lambda x, y: x + y,
@@ -715,6 +719,11 @@ arithmetic_and_functors_ops = {
     "number": (_id, compile_number),
     "arg": _id,
     "composition": compose,
+    "map": map,
+    "fmap2": fmap2,
+    "count": count,
+    "sum": sum,
+    "foldl": foldl,
 }
 
 arithmetic_and_functors_compile_ops = generate_compiler_ops(arithmetic_and_functors_ops)
@@ -722,10 +731,14 @@ arithmetic_and_functors_compile_ops = generate_compiler_ops(arithmetic_and_funct
 
 test_arithmetic_and_functors = lambda *args, **kvargs: test(arithmetic_and_functors_ops, arithmetic_and_functors_parser, *args, **kvargs)
 
-test_arithmetic_and_functors("_ + 1 | _ * 2", 0, 2, verbose=True)
+test_arithmetic_and_functors("_ + 1 | _ * 2 | 10 / _ | _ / 5", 0, 1, verbose=True)
 
 
-
+#TODO: Difference between functors with only functions as parameters like compose
+# and functors with data and function parameters like map?
+# map f x == (map f) x
+# So map just return function that apply function to every item.
+#TODO: What if we have one value and multiple finctions, like [g(x) for g in funcs] - how it called?
 
 
 """
