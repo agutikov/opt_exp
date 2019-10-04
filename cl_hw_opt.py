@@ -6,6 +6,7 @@ import lark
 from pprint import pprint
 from inspect import signature
 import time
+import random
 
 """
 =====================================================================================================
@@ -88,14 +89,26 @@ def cat_contains_subcat_from_list(cat: List[str], sub_cat_list: List[List[str]])
 #      Lambda compilation vs interpretation, compare implementation and performance.
 
 #TODO: Generator from grammar, random node selection and random/fixed limited depth.
-#TODO: generate grammar from ops with rules like: infix, prefix, postfix, left/right-accociative, with/without parentheses, etc...
 
 
 #TODO: Pack grammar,ops,start_symbol into language and add wrap_language(outer_lang, iner_lang) function
 
+#TODO: lang -> (grammar -> parser, compiler, interpreter, generator)
+# lang: [op], 
+#   op: "name", "sign", arity, function, grammar_rules
+#     grammar_rules: priority, grammar_order, grammar_accociativity, grammar_parantheses
+#       priority: non-negative number, root element has min priority
+#       grammar_order: infix, prefix, postfix
+#       grammar_accociativity: left, right
+#       grammar_parantheses: required, available, restricted
+#
+# Compose languages by matching terminal and root nodes of grammar and shifting priority
+# Compose predefined languages like:
+#   MYLANG = LOGIC on COMPARE on ARYTHMETIC on (What goes here? Vars and numbers. How to make function with arg, like (_ + 3))
+
+
+
 _id = lambda x: x
-
-
 
 #TODO: compile_tree and compile_token ???
 
@@ -130,6 +143,7 @@ def compile_func_call(func, compile_arg, ops, tree):
         # Functor
         return func(*arg_funcs)
 
+    #TODO: Question - are every g(x) calculated or only required?
     return (lambda f, *funcs: lambda x: f(*(g(x) for g in funcs)))(func, *arg_funcs)
 
 
@@ -189,13 +203,15 @@ def interpret_tree(ops, env, tree):
     if arity != len(tree.children):
         raise f'ERROR: interpret_tree: function "{tree.data}" invalid number of arguments: {len(tree.children)} != {arity}'
 
+    # optimization - eval on demand
+    fargs = [(lambda _ops, _tree: lambda x: interpret_arg(_ops, x, _tree))(ops, subtree) for subtree in tree.children]
+
     if sig.return_annotation == Callable:
-        # Functor - pass carried interpret_tree, not results as arguments to functor
-        args = [(lambda _ops, _tree: lambda x: interpret_tree(_ops, x, _tree))(ops, subtree) for subtree in tree.children]
-        return func(*args)(env)
+        # Functor - pass carried interpret_arg, not results as arguments to functor
+        return func(*fargs)(env)
     else:
-        args = [interpret_arg(ops, env, subtree) for subtree in tree.children]
-        return func(*args)
+        #TODO: Question - are every g(x) calculated or only required?
+        return (lambda f, fa: lambda e: f(*(g(e) for g in fa)))(func, fargs)(env)
 
 
 def interpret(interpreter, text, env):
@@ -209,13 +225,52 @@ def interpret(interpreter, text, env):
 # Test
 # ====================================================================================================
 #
+
+class NodeCounter:
+    def __init__(self):
+        self.node_counter = 0
+        self.subtree_counter = 0
+        self.leaf_counter = 0
+        self.depth = 0
+        self.max_depth = 0
+
+    def visit(self, tree):
+        self.depth += 1
+        if self.max_depth < self.depth:
+            self.max_depth = self.depth
+
+        self.node_counter += 1
+        if isinstance(tree, lark.Tree):
+            self.subtree_counter += 1
+            for node in tree.children:
+                self.visit(node)
+        else:
+            self.leaf_counter += 1
+
+        self.depth -= 1
+
+def count_nodes(tree):
+    nc = NodeCounter()
+    nc.visit(tree)
+    return nc.node_counter, nc.subtree_counter, nc.leaf_counter, nc.max_depth
  
-def test(ops, parser, text, env, result):
+def test(ops, parser, text, env, result, verbose=False, debug=False):
+    print()
+    if verbose:
+        print(text)
+        print()
+        print(env)
     compiler_ops = generate_compiler_ops(ops)
 
     start = time.process_time()
     tree = parser.parse(text)
     parse_elapsed = time.process_time() - start
+    if verbose:
+        print()
+        print(tree.pretty())
+
+    nodes, subtrees, leafs, max_depth = count_nodes(tree)
+    print(f'chars: {len(text)}, nodes: {nodes}, subtrees: {subtrees}, leafs: {leafs}, max_depth: {max_depth}')
 
     start = time.process_time()
     f = compile_tree(compiler_ops, tree)
@@ -225,13 +280,15 @@ def test(ops, parser, text, env, result):
     r = f(env)
     exec_elapsed = time.process_time() - start
 
-    assert(result == r)
+    if not debug:
+        assert(result == r)
 
     start = time.process_time()
     r = interpret_tree(ops, env, tree)
     interpret_elapsed = time.process_time() - start
 
-    assert(result == r)
+    if not debug:
+        assert(result == r)
 
     print(f"parse: {parse_elapsed}, " 
           f"compile: {compile_elapsed}, "
@@ -347,14 +404,16 @@ ARITHMETIC_GRAMMAR = """
 
 ?value: NUMBER            -> number
   | NAME                  -> var
-  | "-" value             -> neg
+  | "-" power             -> neg
   | "(" sum ")"
 
 %import common.CNAME -> NAME
 %import common.NUMBER
-%import common.WS_INLINE
 
+%import common.WS_INLINE
+%import common.NEWLINE
 %ignore WS_INLINE
+%ignore NEWLINE
 """
 
 arithmetic_parser = lark.Lark(ARITHMETIC_GRAMMAR, start="sum")
@@ -410,6 +469,7 @@ ARITHMETIC_PREDICATES_GRAMMAR = """
   | arithmetic_predicate "<=" sum          -> lte
   | arithmetic_predicate "==" sum          -> eq
   | arithmetic_predicate "!=" sum          -> neq
+  | "(" arithmetic_predicate ")"
 """ + ARITHMETIC_GRAMMAR
 
 arithmetic_predicate_parser = lark.Lark(ARITHMETIC_PREDICATES_GRAMMAR, start="arithmetic_predicate")
@@ -452,7 +512,7 @@ ARITHMETIC_AND_LOGIC_PREDICATES_GRAMMAR = """
   | conjunction "and" negation         -> and
 
 ?negation: arithmetic_predicate
-  | "not" arithmetic_predicate         -> not
+  | "not" negation                     -> not
   | "(" disjunction ")"
 """ + ARITHMETIC_PREDICATES_GRAMMAR
 
@@ -470,8 +530,7 @@ arithmetic_and_logic_predicate_compile_ops = generate_compiler_ops(arithmetic_an
 def compile_arithmetic_and_logic_predicate(text: str):
     return compile((arithmetic_and_logic_predicate_compile_ops, arithmetic_and_logic_predicate_parser), text)
 
-def test_arith_logic(text, env, result):
-    test(arithmetic_and_logic_predicate_ops, arithmetic_and_logic_predicate_parser, text, env, result)
+test_arith_logic = lambda *args, **kvargs: test(arithmetic_and_logic_predicate_ops, arithmetic_and_logic_predicate_parser, *args, **kvargs)
 
 test_arith_logic("a < b and (a == b or a * c >= b)", {'a': 100, 'b': 200, 'c': 3}, True)
 test_arith_logic("a < b and a == b or a * c >= b", {'a': 100, 'b': 200, 'c': 3}, True)
@@ -480,6 +539,56 @@ test_arith_logic(
     {'a': 100, 'b': 200, 'c': 3, 'd': 9768, 'e': 2334, 'g': -1, 'f': -5.5},
     False
 )
+
+
+#
+# ====================================================================================================
+# Generate
+# ====================================================================================================
+#
+
+def wrap(s):
+    return "("+s+")"
+
+def rand_join(j_arr, v_arr, count):
+    v_arr = [wrap(x) for x in v_arr]
+    v = [random.choice(v_arr) for i in range(count)]
+    j = [random.choice(j_arr) for i in range(count-1)]
+    x = [v[int(i/2)] if i%2==0 else j[int(i/2)] for i in range(count*2-1)]
+    return ''.join(x)
+
+def rand_join_pairs(j_arr, v_arr, count):
+    v_arr = [wrap(x) for x in v_arr]
+    return [random.choice(v_arr) + random.choice(j_arr) + random.choice(v_arr) for i in range(count)]
+
+s2 = rand_join_pairs(["+", "-", "*", "/"], ["x", "y", "z", "1", "2", "3", "4"], 100)
+s1 = rand_join_pairs(["==", ">", "<", ">=", "<=", "!="], s2, 100)
+s = rand_join(["and", "or"], s1, 200)
+e = {'x': 9875.7896, 'y': 876.976, 'z': -876.09}
+test_arith_logic(s, e, True)
+
+def rand_opt(s, prob=0.2):
+    return s if random.random() < prob else ""
+
+def rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth=0.8):
+    if min_depth == 0 and random.random() > rand_depth:
+        max_depth = 0
+    else:
+        if min_depth > 0:
+            min_depth -= 1
+        max_depth -= 1
+
+    v1 = random.choice(v_arr) if max_depth == 0 else rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth)
+    v2 = random.choice(v_arr) if max_depth == 0 else rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth)
+    return rand_opt(random.choice(j1_arr)) + v1 + random.choice(j2_arr) + rand_opt(random.choice(j1_arr)) + v2
+
+
+s2 = [rand_join_depth(["+", "-", "*", "/"], ["", " -"], ["x", "y", "z", "1", "2", "3"], 3, 5, 0.9) for i in range(10)]
+s1 = rand_join_pairs([" == ", " > ", " < ", " >= ", " <= ", " != "], s2, 10)
+s = rand_join_depth(["\nor\n", "\nand\n"], ["", "not "], s1, 3, 5, 0.9)
+test_arith_logic(s, e, False, verbose=False, debug=True)
+
+
 
 #
 # ====================================================================================================
@@ -495,9 +604,9 @@ PIPES_AND_FUNCTIONS_GRAMMAR = """
   | "(" composition ")"
 
 %import common.CNAME
+
 %import common.WS_INLINE
 %import common.NEWLINE
-
 %ignore WS_INLINE
 %ignore NEWLINE
 """
@@ -521,14 +630,16 @@ def compile_pipes_and_functions(text: str):
     return compile((pipes_and_functions_compile_ops, pipes_and_functions_parser), text)
 
 f = compile_pipes_and_functions("|\n".join(["(add_1 | mul_2 | neg)"]*200))
-
-print(f(1))
+#print(f(1))
 
 def test_pipes_and_functions(text, env, result):
     test(pipes_and_functions_ops, pipes_and_functions_parser, text, env, result)
 
 
 test_pipes_and_functions("|".join(["(add_1 | mul_2 | neg)"]*200), 1, 2678230073764983792569936820568604337537004989637988058835626)
+
+#TODO: Implement functions definition like (_ + 3) and other functors
+
 
 
 """
@@ -557,7 +668,7 @@ Path selector
 
     Path selector cat takes objects or values.
 
-    Current object is argument for first function automatically - not required special sign for current object.
+    _ - current object
     / - root object
     .parent, ../ - parent object
     .objects, .[] - child objects
