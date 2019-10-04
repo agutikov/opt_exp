@@ -88,9 +88,6 @@ def cat_contains_subcat_from_list(cat: List[str], sub_cat_list: List[List[str]])
 #      In Python, C++ and Haskell.
 #      Lambda compilation vs interpretation, compare implementation and performance.
 
-#TODO: Generator from grammar, random node selection and random/fixed limited depth.
-
-
 #TODO: Pack grammar,ops,start_symbol into language and add wrap_language(outer_lang, iner_lang) function
 
 #TODO: lang -> (grammar -> parser, compiler, interpreter, generator)
@@ -103,10 +100,28 @@ def cat_contains_subcat_from_list(cat: List[str], sub_cat_list: List[List[str]])
 #       grammar_parantheses: required, available, restricted
 #
 # Compose languages by matching terminal and root nodes of grammar and shifting priority
-# Compose predefined languages like:
+# Compose predefined languages, like:
 #   MYLANG = LOGIC on COMPARE on ARYTHMETIC on (What goes here? Vars and numbers. How to make function with arg, like (_ + 3))
-
-
+# Compose one language over multiple langs, like:
+#   MYLANG = LOGIC on (COMPARE on ARYTHMETIC on (ENV_VARS, NUMBERS), TYPE_PREDICATES)
+#
+# Composition of languages and types (signatures) of functions, Category Theory graph for that functions and types.
+#
+# Ops dict is complete definition of lang grammar and of operational semantics.
+# Let's think about semantics of functions themself.
+# For every function we can define true statements using args and return value and other operations.
+# Example: If z == x + y then z > x and z > y and z - x == y and z - y == x.
+# Definition of function: if z is the result of add(x, y) then z == x + y.
+# Definition of multiplication with addition, foldl and repeat:
+#   z == x * y => z == foldl (+) [repeat x times y]
+# Also can add other axioms, or properties of operations, like transitivity:
+#   transitivity of <: x < y and y < z => x < z
+#   transitivity of any op: x op y and y op z => x op z
+# So having all this properties with every op compiler can infer properties of composed functions.
+# Or if can answer questions like: if (many equations) then if (one equation) is true?
+# Anyway what is the meaning of understanding of function semantics?
+# It is ability to predict result of function, and explain properties of result.
+#
 
 _id = lambda x: x
 
@@ -128,10 +143,15 @@ def compile_func_call(func, compile_arg, ops, tree):
     # 2-nd - compile function from token value, like get var value or return number
     if isinstance(tree, lark.Token):
         return func
+    
+    # tree without children is Token
+    # dirty hack ?
+    if len(tree.children) == 0:
+        return func
 
     arity = len(sig.parameters)
     if arity != len(tree.children):
-        raise f'ERROR: compile_func_call: function "{tree.data}" reqires {arity} arguments, provided {len(tree.children)}'
+        raise Exception(f'ERROR: compile_func_call: function "{tree.data}" reqires {arity} arguments, provided {len(tree.children)}')
 
     arg_funcs = [compile_arg(ops, arg) for arg in tree.children]
 
@@ -198,10 +218,14 @@ def interpret_tree(ops, env, tree):
     if isinstance(tree, lark.Token):
         return func(env)
 
+    # dirty hack ?
+    if len(tree.children) == 0:
+        return func(env)
+
     sig = signature(func)
     arity = len(sig.parameters)
     if arity != len(tree.children):
-        raise f'ERROR: interpret_tree: function "{tree.data}" invalid number of arguments: {len(tree.children)} != {arity}'
+        raise Exception(f'ERROR: interpret_tree: function "{tree.data}" reqires {arity} arguments, provided {len(tree.children)}')
 
     # optimization - eval on demand
     fargs = [(lambda _ops, _tree: lambda x: interpret_arg(_ops, x, _tree))(ops, subtree) for subtree in tree.children]
@@ -298,6 +322,41 @@ def test(ops, parser, text, env, result, verbose=False, debug=False):
 
 #
 # ====================================================================================================
+# Generate
+# ====================================================================================================
+#
+
+def wrap(s):
+    return "("+s+")"
+
+def rand_join(j_arr, v_arr, count):
+    v_arr = [wrap(x) for x in v_arr]
+    v = [random.choice(v_arr) for i in range(count)]
+    j = [random.choice(j_arr) for i in range(count-1)]
+    x = [v[int(i/2)] if i%2==0 else j[int(i/2)] for i in range(count*2-1)]
+    return ''.join(x)
+
+def rand_join_pairs(j_arr, v_arr, count):
+    v_arr = [wrap(x) for x in v_arr]
+    return [random.choice(v_arr) + random.choice(j_arr) + random.choice(v_arr) for i in range(count)]
+
+def rand_opt(s, prob=0.2):
+    return s if random.random() < prob else ""
+
+def rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth=0.8):
+    if min_depth == 0 and random.random() > rand_depth:
+        max_depth = 0
+    else:
+        if min_depth > 0:
+            min_depth -= 1
+        max_depth -= 1
+
+    v1 = random.choice(v_arr) if max_depth == 0 else rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth)
+    v2 = random.choice(v_arr) if max_depth == 0 else rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth)
+    return rand_opt(random.choice(j1_arr)) + v1 + random.choice(j2_arr) + rand_opt(random.choice(j1_arr)) + v2
+
+#
+# ====================================================================================================
 # Logic operations
 # ====================================================================================================
 #
@@ -386,7 +445,7 @@ assert(not compile_cat_predicate("a.b.c.d or x.y.z.r or not x.y.z")(parse_catego
 
 #
 # ====================================================================================================
-# Arithmetic functions on environment with variable values.
+# Arithmetic functions on environment with named constants.
 # ====================================================================================================
 #
 
@@ -403,7 +462,7 @@ ARITHMETIC_GRAMMAR = """
   | value "**" power      -> pow
 
 ?value: NUMBER            -> number
-  | NAME                  -> var
+  | NAME                  -> const
   | "-" power             -> neg
   | "(" sum ")"
 
@@ -425,7 +484,7 @@ def compile_number(ops, tree):
     """
     return (lambda N: lambda x: N)(float(tree)) 
 
-def compile_var(ops, tree):
+def compile_const(ops, tree):
     return (lambda var_name: lambda x: x[var_name])(tree) 
 
 arithmetic_ops = {
@@ -436,14 +495,13 @@ arithmetic_ops = {
     "neg": lambda x: -x,
     "pow": lambda x, y: x ** y,
     "number": (_id, compile_number),
-    "var": (_id, compile_var),
+    "const": (_id, compile_const),
 }
 
 arithmetic_compile_ops = generate_compiler_ops(arithmetic_ops)
 
 def compile_arithmetic(text: str):
     return compile((arithmetic_compile_ops, arithmetic_parser), text)
-
 
 assert(0 == compile_arithmetic("0")({}))
 assert(-1 == compile_arithmetic("-1")({}))
@@ -453,9 +511,11 @@ test(arithmetic_ops, arithmetic_parser, "x * 2 + -y", {'x': 1, 'y': 2}, 0)
 test(arithmetic_ops, arithmetic_parser, "x / 2 - 1 / y", {'x': 1, 'y': 2}, 0)
 test(arithmetic_ops, arithmetic_parser, "x ** y - 1", {'x': 1, 'y': 2}, 0)
 
+
+
 #
 # ====================================================================================================
-# Arithmetic predicates on environment with variable values.
+# Arithmetic predicates on environment with named constants.
 # ====================================================================================================
 #
 
@@ -500,7 +560,7 @@ test(arithmetic_predicate_ops, arithmetic_predicate_parser, "(a ** 2 ** 2 - 10) 
 
 #
 # ====================================================================================================
-# Arithmetic calculations and predicates and logic functions on environment with variable values.
+# Arithmetic calculations and predicates and logic functions on environment with named constants.
 # ====================================================================================================
 #
 
@@ -540,53 +600,17 @@ test_arith_logic(
     False
 )
 
+if False:
+    s2 = rand_join_pairs(["+", "-", "*", "/"], ["x", "y", "z", "1", "2", "3", "4"], 100)
+    s1 = rand_join_pairs(["==", ">", "<", ">=", "<=", "!="], s2, 100)
+    s = rand_join(["and", "or"], s1, 200)
+    e = {'x': 9875.7896, 'y': 876.976, 'z': -876.09}
+    test_arith_logic(s, e, True)
 
-#
-# ====================================================================================================
-# Generate
-# ====================================================================================================
-#
-
-def wrap(s):
-    return "("+s+")"
-
-def rand_join(j_arr, v_arr, count):
-    v_arr = [wrap(x) for x in v_arr]
-    v = [random.choice(v_arr) for i in range(count)]
-    j = [random.choice(j_arr) for i in range(count-1)]
-    x = [v[int(i/2)] if i%2==0 else j[int(i/2)] for i in range(count*2-1)]
-    return ''.join(x)
-
-def rand_join_pairs(j_arr, v_arr, count):
-    v_arr = [wrap(x) for x in v_arr]
-    return [random.choice(v_arr) + random.choice(j_arr) + random.choice(v_arr) for i in range(count)]
-
-s2 = rand_join_pairs(["+", "-", "*", "/"], ["x", "y", "z", "1", "2", "3", "4"], 100)
-s1 = rand_join_pairs(["==", ">", "<", ">=", "<=", "!="], s2, 100)
-s = rand_join(["and", "or"], s1, 200)
-e = {'x': 9875.7896, 'y': 876.976, 'z': -876.09}
-test_arith_logic(s, e, True)
-
-def rand_opt(s, prob=0.2):
-    return s if random.random() < prob else ""
-
-def rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth=0.8):
-    if min_depth == 0 and random.random() > rand_depth:
-        max_depth = 0
-    else:
-        if min_depth > 0:
-            min_depth -= 1
-        max_depth -= 1
-
-    v1 = random.choice(v_arr) if max_depth == 0 else rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth)
-    v2 = random.choice(v_arr) if max_depth == 0 else rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth)
-    return rand_opt(random.choice(j1_arr)) + v1 + random.choice(j2_arr) + rand_opt(random.choice(j1_arr)) + v2
-
-
-s2 = [rand_join_depth(["+", "-", "*", "/"], ["", " -"], ["x", "y", "z", "1", "2", "3"], 3, 5, 0.9) for i in range(10)]
-s1 = rand_join_pairs([" == ", " > ", " < ", " >= ", " <= ", " != "], s2, 10)
-s = rand_join_depth(["\nor\n", "\nand\n"], ["", "not "], s1, 3, 5, 0.9)
-test_arith_logic(s, e, False, verbose=False, debug=True)
+    s2 = [rand_join_depth(["+", "-", "*", "/"], ["", " -"], ["x", "y", "z", "1", "2", "3"], 3, 5, 0.9) for i in range(10)]
+    s1 = rand_join_pairs([" == ", " > ", " < ", " >= ", " <= ", " != "], s2, 10)
+    s = rand_join_depth(["\nor\n", "\nand\n"], ["", "not "], s1, 3, 5, 0.9)
+    test_arith_logic(s, e, False, verbose=False, debug=True)
 
 
 
@@ -632,13 +656,75 @@ def compile_pipes_and_functions(text: str):
 f = compile_pipes_and_functions("|\n".join(["(add_1 | mul_2 | neg)"]*200))
 #print(f(1))
 
-def test_pipes_and_functions(text, env, result):
-    test(pipes_and_functions_ops, pipes_and_functions_parser, text, env, result)
+test_pipes_and_functions = lambda *args, **kvargs: test(pipes_and_functions_ops, pipes_and_functions_parser, *args, **kvargs)
+
+test_pipes_and_functions("add_1 | mul_2 | neg", 1, 0, verbose=True, debug=True)
+
+if False:
+    test_pipes_and_functions("|".join(["(add_1 | mul_2 | neg)"]*200), 1, 2678230073764983792569936820568604337537004989637988058835626)
 
 
-test_pipes_and_functions("|".join(["(add_1 | mul_2 | neg)"]*200), 1, 2678230073764983792569936820568604337537004989637988058835626)
+
+
+#
+# ====================================================================================================
+# Arithmetic functions from one argument and Functors.
+# ====================================================================================================
+#
 
 #TODO: Implement functions definition like (_ + 3) and other functors
+
+ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
+?composition: sum
+  | sum "|" composition
+
+?sum: product
+  | sum "+" product       -> add
+  | sum "-" product       -> sub
+
+?product: power
+  | product "*" power     -> mul
+  | product "/" power     -> div
+
+?power: value
+  | value "**" power      -> pow
+
+?value: NUMBER            -> number
+  | "_"                   -> arg
+  | "-" power             -> neg
+  | "(" sum ")"
+
+%import common.CNAME
+%import common.NUMBER
+
+%import common.WS_INLINE
+%import common.NEWLINE
+%ignore WS_INLINE
+%ignore NEWLINE
+"""
+
+arithmetic_and_functors_parser = lark.Lark(ARITHMETIC_AND_FUNCTORS_GRAMMAR, start="sum")
+
+arithmetic_and_functors_ops = {
+    "add": lambda x, y: x + y,
+    "sub": lambda x, y: x - y,
+    "mul": lambda x, y: x * y,
+    "div": lambda x, y: x / y,
+    "neg": lambda x: -x,
+    "pow": lambda x, y: x ** y,
+    "number": (_id, compile_number),
+    "arg": _id,
+    "composition": compose,
+}
+
+arithmetic_and_functors_compile_ops = generate_compiler_ops(arithmetic_and_functors_ops)
+
+
+test_arithmetic_and_functors = lambda *args, **kvargs: test(arithmetic_and_functors_ops, arithmetic_and_functors_parser, *args, **kvargs)
+
+test_arithmetic_and_functors("_ + 1 | _ * 2", 0, 2, verbose=True)
+
+
 
 
 
@@ -804,7 +890,7 @@ global_properties = {
 
 def add_property_if_applicable(obj_type: ObjectType, name: str, predicate: str, query: str):
     if name in obj_type.properties or name in obj_type.provides:
-        raise f'ERROR: add_property_if_applicable({{.name={obj_type.name}}}, {name}, ...): resource "{name}" is already defined in property or provides'
+        raise Exception(f'ERROR: add_property_if_applicable({{.name={obj_type.name}}}, {name}, ...): resource "{name}" is already defined in property or provides')
     p = compile_cat_predicate(predicate)
     cats = parse_categories(obj_type.categories)
     if p(cats):
