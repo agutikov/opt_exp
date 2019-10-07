@@ -4,9 +4,10 @@ import uuid
 from typing import List, Dict, Tuple, Callable, Any
 import lark
 from pprint import pprint
-from inspect import signature
+from inspect import signature, Parameter
 import time
 import random
+import functools
 
 """
 =====================================================================================================
@@ -150,7 +151,12 @@ def compile_func_call(func, compile_arg, ops, tree):
         return func
 
     arity = len(sig.parameters)
-    if arity != len(tree.children):
+    check_arity = True
+    if arity >= 1:
+        if list(sig.parameters.values())[-1].kind == Parameter.VAR_POSITIONAL:
+            check_arity = False
+
+    if check_arity and arity != len(tree.children):
         raise Exception(f'ERROR: compile_func_call: function "{tree.data}" reqires {arity} arguments, provided {len(tree.children)}')
 
     arg_funcs = [compile_arg(ops, arg) for arg in tree.children]
@@ -164,7 +170,15 @@ def compile_func_call(func, compile_arg, ops, tree):
         return func(*arg_funcs)
 
     #TODO: Question - are every g(x) calculated or only required?
-    return (lambda f, *funcs: lambda x: f(*(g(x) for g in funcs)))(func, *arg_funcs)
+    return (lambda f, funcs:
+        lambda *xs: f(
+            *(
+                g(*xs)
+                for g
+                in funcs
+            )
+        )
+    )(func, arg_funcs)
 
 
 def generate_compiler_ops(ops_table: Dict[str, Callable]):
@@ -199,7 +213,7 @@ def compile(compiler, text):
 # ====================================================================================================
 #
 
-def interpret_tree(ops, env, tree):
+def interpret_tree(ops, tree, *env):
     """
         Interpretation works directly with same ops as compilation, without generate_compiler_ops().
     """
@@ -213,36 +227,42 @@ def interpret_tree(ops, env, tree):
     else: 
         # value is tuple
         func = value[0]
-        interpret_arg = lambda ops, env, tree: value[1](ops, tree)(env)
+        interpret_arg = lambda ops, tree, *env: value[1](ops, tree)(*env)
 
     if isinstance(tree, lark.Token):
-        return func(env)
+        return func(*env)
 
     # dirty hack ?
     if len(tree.children) == 0:
-        return func(env)
+        return func(*env)
 
     sig = signature(func)
+
     arity = len(sig.parameters)
-    if arity != len(tree.children):
+    check_arity = True
+    if arity >= 1:
+        if list(sig.parameters.values())[-1].kind == Parameter.VAR_POSITIONAL:
+            check_arity = False
+
+    if check_arity and arity != len(tree.children):
         raise Exception(f'ERROR: interpret_tree: function "{tree.data}" reqires {arity} arguments, provided {len(tree.children)}')
 
     # optimization - eval on demand
-    fargs = [(lambda _ops, _tree: lambda x: interpret_arg(_ops, x, _tree))(ops, subtree) for subtree in tree.children]
+    fargs = [(lambda _ops, _tree: lambda *xs: interpret_arg(_ops, _tree, *xs))(ops, subtree) for subtree in tree.children]
 
     if sig.return_annotation == Callable:
         # Functor - pass carried interpret_arg, not results as arguments to functor
-        return func(*fargs)(env)
+        return func(*fargs)(*env)
     else:
         #TODO: Question - are every g(x) calculated or only required?
-        return (lambda f, fa: lambda e: f(*(g(e) for g in fa)))(func, fargs)(env)
+        return (lambda f, fa: lambda *xs: f(*(g(*xs) for g in fa)))(func, fargs)(*env)
 
 
-def interpret(interpreter, text, env):
+def interpret(interpreter, text, *env):
     ops, parser = interpreter
     tree = parser.parse(text)
     #print(tree.pretty())
-    return interpret_tree(ops, env, tree)
+    return interpret_tree(ops, tree, *env)
 
 #
 # ====================================================================================================
@@ -308,7 +328,7 @@ def test(ops, parser, text, env, result, verbose=False, debug=False):
         assert(result == r)
 
     start = time.process_time()
-    r = interpret_tree(ops, env, tree)
+    r = interpret_tree(ops, tree, env)
     interpret_elapsed = time.process_time() - start
 
     if not debug:
@@ -326,18 +346,18 @@ def test(ops, parser, text, env, result, verbose=False, debug=False):
 # ====================================================================================================
 #
 
-def wrap(s):
+def wrap_str(s):
     return "("+s+")"
 
 def rand_join(j_arr, v_arr, count):
-    v_arr = [wrap(x) for x in v_arr]
+    v_arr = [wrap_str(x) for x in v_arr]
     v = [random.choice(v_arr) for i in range(count)]
     j = [random.choice(j_arr) for i in range(count-1)]
     x = [v[int(i/2)] if i%2==0 else j[int(i/2)] for i in range(count*2-1)]
     return ''.join(x)
 
 def rand_join_pairs(j_arr, v_arr, count):
-    v_arr = [wrap(x) for x in v_arr]
+    v_arr = [wrap_str(x) for x in v_arr]
     return [random.choice(v_arr) + random.choice(j_arr) + random.choice(v_arr) for i in range(count)]
 
 def rand_opt(s, prob=0.2):
@@ -482,7 +502,7 @@ def compile_number(ops, tree):
     """
         Returns function from x that returns value of number.
     """
-    return (lambda N: lambda x: N)(float(tree)) 
+    return (lambda N: lambda *xs: N)(float(tree)) 
 
 def compile_const(ops, tree):
     return (lambda var_name: lambda x: x[var_name])(tree) 
@@ -637,12 +657,12 @@ PIPES_AND_FUNCTIONS_GRAMMAR = """
 
 pipes_and_functions_parser = lark.Lark(PIPES_AND_FUNCTIONS_GRAMMAR, start="composition")
 
-def compose(g, f) -> Callable:
+def compose_inv(g, f) -> Callable:
     return lambda x: f(g(x))
 
 #TODO: Can I use functors for compilation?
 pipes_and_functions_ops = {
-    "composition": compose,
+    "composition": compose_inv,
     "add_1": lambda x: x + 1,
     "mul_2": lambda x: x * 2,
     "neg": lambda x: -x,
@@ -673,12 +693,22 @@ if False:
 #
 
 ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
-?composition: sum
-  | sum "|" composition
+?pipeline: function
+  | function "|" pipeline
 
-?sum: product
-  | sum "+" product       -> add
-  | sum "-" product       -> sub
+?function: "(" pipeline ")"
+  | polynom
+  | "count"                -> count
+  | "sum"                  -> sum
+  | "map" function         -> map
+  | "fmap" function +      -> fmap
+  | "bind" function value +    -> bind
+  | "foldl" function value     -> foldl
+  | "wrap" function function +  -> wrap
+
+?polynom: product
+  | polynom "+" product       -> add
+  | polynom "-" product       -> sub
 
 ?product: power
   | product "*" power     -> mul
@@ -689,8 +719,9 @@ ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
 
 ?value: NUMBER            -> number
   | "_"                   -> arg
+  | "$" NUMBER            -> getarg
   | "-" power             -> neg
-  | "(" sum ")"
+  | "(" polynom ")"
 
 %import common.NUMBER
 
@@ -699,15 +730,70 @@ ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
 %ignore WS_INLINE
 %ignore NEWLINE
 """
+arithmetic_and_functors_parser = lark.Lark(ARITHMETIC_AND_FUNCTORS_GRAMMAR, start="pipeline")
 
-arithmetic_and_functors_parser = lark.Lark(ARITHMETIC_AND_FUNCTORS_GRAMMAR, start="composition")
+'''
+#TODO: use same arithmetic functions for composition of functions not only values
+ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
+?function: CNAME
+  | composition
+  | polynom
+  | "map" function                -> map
+  | "fmap" function +             -> fmap
+  | "bind" function function +    -> bind
+  | "foldl" function function     -> foldl
+  | "(" function ")"
 
-def map(f) -> Callable:
+?composition: function "|" composition
+  | "(" composition ")"
+
+?polynom: product
+  | polynom "+" product           -> add
+  | polynom "-" product           -> sub
+
+?product: power
+  | product "*" power             -> mul
+  | product "/" power             -> div
+
+?power: value
+  | value "**" power              -> pow
+
+?value: NUMBER                    -> number
+  | "_"                           -> arg
+  | "$" NUMBER                    -> getarg
+  | "-" value                     -> neg
+  | "(" polynom ")"
+
+
+
+%import common.CNAME
+%import common.NUMBER
+
+%import common.WS_INLINE
+%import common.NEWLINE
+%ignore WS_INLINE
+%ignore NEWLINE
+"""
+arithmetic_and_functors_parser = lark.Lark(ARITHMETIC_AND_FUNCTORS_GRAMMAR, start="function")
+'''
+
+def _map(f) -> Callable:
     return lambda x: [f(el) for el in x]
 
-#TODO: variadic functor fmap
-def fmap2(f1, f2) -> Callable:
-    return lambda x: [f1(x), f2(x)]
+def fmap(*funcs) -> Callable:
+    return lambda x: [f(x) for f in funcs]
+
+def foldl(f, init_val) -> Callable:
+    return lambda x: functools.reduce(f, x, init_val())
+
+def bind(f, *fargs) -> Callable:
+    return lambda *xs: f(*(g(*xs) for g in fargs), *xs)
+
+def compile_getarg(ops, tree):
+    return (lambda N: lambda *xs: [x for x in xs][N])(int(tree))
+
+def wrap(outer_f, *fargs) -> Callable:
+    return lambda *xs: outer_f(*(g(*xs) for g in fargs))
 
 arithmetic_and_functors_ops = {
     "add": lambda x, y: x + y,
@@ -717,13 +803,23 @@ arithmetic_and_functors_ops = {
     "neg": lambda x: -x,
     "pow": lambda x, y: x ** y,
     "number": (_id, compile_number),
-    "arg": _id,
-    "composition": compose,
-    "map": map,
-    "fmap2": fmap2,
-    "count": count,
-    "sum": sum,
+
+    "arg": lambda *xs: [x for x in xs][0],
+    "getarg": (_id, compile_getarg),
+
+    "count": lambda x: len(x),
+    "sum": lambda x: sum(x),
+
+    "pipeline": compose_inv,
+
+    "map": _map,
+    "fmap": fmap,
+
+    "bind": bind,
+
     "foldl": foldl,
+
+    "wrap": wrap,
 }
 
 arithmetic_and_functors_compile_ops = generate_compiler_ops(arithmetic_and_functors_ops)
@@ -731,10 +827,38 @@ arithmetic_and_functors_compile_ops = generate_compiler_ops(arithmetic_and_funct
 
 test_arithmetic_and_functors = lambda *args, **kvargs: test(arithmetic_and_functors_ops, arithmetic_and_functors_parser, *args, **kvargs)
 
+test_arithmetic_and_functors("10", None, 10, verbose=True)
+test_arithmetic_and_functors("10 + 10", None, 20, verbose=True)
+test_arithmetic_and_functors("(_ + 1) | (_ * 2) | (10 / _) | (_ / 5)", 0, 1, verbose=True)
 test_arithmetic_and_functors("_ + 1 | _ * 2 | 10 / _ | _ / 5", 0, 1, verbose=True)
+test_arithmetic_and_functors("_ + 1 | ((_ * 2) | (10 / _)) | _ / 5", 0, 1, verbose=True)
+test_arithmetic_and_functors("_ + 1 | ((_ * 2) | 10 / _) | _ / 5", 0, 1, verbose=True)
+test_arithmetic_and_functors("_ + 1 | (_ * 2 | 10 / _) | _ / 5", 0, 1, verbose=True)
+test_arithmetic_and_functors("_ + 1 | (_ * 2 | (10 / _)) | _ / 5", 0, 1, verbose=True)
+test_arithmetic_and_functors("count | _ * 2", [0, 1, 2], 6, verbose=True)
+test_arithmetic_and_functors("map (fmap (_) (_) (_) | count) | sum", [{}, {}, {}], 9, verbose=True)
+test_arithmetic_and_functors("map (2 * _ | _ + 1)", [0, 1, 2], [1, 3, 5], verbose=True)
+test_arithmetic_and_functors("fmap (_ + 1) (_ - 1) (_ + 1 | _ * 2)", 0, [1, -1, 2], verbose=True)
+test_arithmetic_and_functors("map (_ + _) | sum", [0, 1, 2], 6, verbose=True)
+test_arithmetic_and_functors("map ($0 + $0) | sum", [0, 1, 2], 6, verbose=True)
+test_arithmetic_and_functors("bind ($0 + $0) 1", None, 2, verbose=True)
+test_arithmetic_and_functors("bind ($0 + $1) 1 2", None, 3, verbose=True)
+test_arithmetic_and_functors("bind ($0 + $1) 1 _", 2, 3, verbose=True)
+test_arithmetic_and_functors("bind ($0 + $1) _ 1", 2, 3, verbose=True)
+test_arithmetic_and_functors("bind ($0 + 1 + $1) 1 _", 1, 3, verbose=True)
+test_arithmetic_and_functors("bind ($0 + $1) 1 ", 2, 3, verbose=True)
+test_arithmetic_and_functors("bind ($0 + 1) 1", None, 2, verbose=True)
+test_arithmetic_and_functors("bind (_ + 1) 1", None, 2, verbose=True)
+test_arithmetic_and_functors("foldl ($0 + $1) 0", [1, 2, 3], 6, verbose=True)
+test_arithmetic_and_functors("foldl ($0 * $1) 1", [1, 2, 3], 6, verbose=True)
+
+test_arithmetic_and_functors("wrap ($1 - $2) sum foldl ($0 + $1) 0", [1, 2, 3], 0, verbose=True)
+
+test_arithmetic_and_functors("wrap ($1 - $2) (_ | sum) bind (foldl ($0 + $1) 0) _", [1, 2, 3], 0, verbose=True)
 
 
-#TODO: Difference between functors with only functions as parameters like compose
+
+#TODO: Difference between functors with only functions as parameters like compose_inv
 # and functors with data and function parameters like map?
 # map f x == (map f) x
 # So map just return function that apply function to every item.
