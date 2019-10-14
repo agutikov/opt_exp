@@ -89,42 +89,11 @@ def cat_contains_subcat_from_list(cat: List[str], sub_cat_list: List[List[str]])
 #      In Python, C++ and Haskell.
 #      Lambda compilation vs interpretation, compare implementation and performance.
 
-#TODO: Pack grammar,ops,start_symbol into language and add wrap_language(outer_lang, iner_lang) function
-
-#TODO: lang -> (grammar -> parser, compiler, interpreter, generator)
-# lang: [op], 
-#   op: "name", "sign", arity, function, grammar_rules
-#     grammar_rules: priority, grammar_order, grammar_accociativity, grammar_parantheses
-#       priority: non-negative number, root element has min priority
-#       grammar_order: infix, prefix, postfix
-#       grammar_accociativity: left, right
-#       grammar_parantheses: required, available, restricted
-#
-# Compose languages by matching terminal and root nodes of grammar and shifting priority
-# Compose predefined languages, like:
-#   MYLANG = LOGIC on COMPARE on ARYTHMETIC on (What goes here? Vars and numbers. How to make function with arg, like (_ + 3))
-# Compose one language over multiple langs, like:
-#   MYLANG = LOGIC on (COMPARE on ARYTHMETIC on (ENV_VARS, NUMBERS), TYPE_PREDICATES)
-#
-# Composition of languages and types (signatures) of functions, Category Theory graph for that functions and types.
-#
-# Ops dict is complete definition of lang grammar and of operational semantics.
-# Let's think about semantics of functions themself.
-# For every function we can define true statements using args and return value and other operations.
-# Example: If z == x + y then z > x and z > y and z - x == y and z - y == x.
-# Definition of function: if z is the result of add(x, y) then z == x + y.
-# Definition of multiplication with addition, foldl and repeat:
-#   z == x * y => z == foldl (+) [repeat x times y]
-# Also can add other axioms, or properties of operations, like transitivity:
-#   transitivity of <: x < y and y < z => x < z
-#   transitivity of any op: x op y and y op z => x op z
-# So having all this properties with every op compiler can infer properties of composed functions.
-# Or if can answer questions like: if (many equations) then if (one equation) is true?
-# Anyway what is the meaning of understanding of function semantics?
-# It is ability to predict result of function, and explain properties of result.
-#
 
 _id = lambda x: x
+
+def value_closure(value):
+    return lambda *xs: value
 
 #TODO: compile_tree and compile_token ???
 
@@ -169,16 +138,7 @@ def compile_func_call(func, compile_arg, ops, tree):
         # Functor
         return func(*arg_funcs)
 
-    #TODO: Question - are every g(x) calculated or only required?
-    return (lambda f, funcs:
-        lambda *xs: f(
-            *(
-                g(*xs)
-                for g
-                in funcs
-            )
-        )
-    )(func, arg_funcs)
+    return (lambda f, funcs: lambda *xs: f(*(g(*xs) for g in funcs)))(func, arg_funcs)
 
 
 def generate_compiler_ops(ops_table: Dict[str, Callable]):
@@ -254,7 +214,6 @@ def interpret_tree(ops, tree, *env):
         # Functor - pass carried interpret_arg, not results as arguments to functor
         return func(*fargs)(*env)
     else:
-        #TODO: Question - are every g(x) calculated or only required?
         return (lambda f, fa: lambda *xs: f(*(g(*xs) for g in fa)))(func, fargs)(*env)
 
 
@@ -502,10 +461,10 @@ def compile_number(ops, tree):
     """
         Returns function from x that returns value of number.
     """
-    return (lambda N: lambda *xs: N)(float(tree)) 
+    return value_closure(float(tree))
 
 def compile_const(ops, tree):
-    return (lambda var_name: lambda x: x[var_name])(tree) 
+    return (lambda const_name: lambda x: x[const_name])(tree) 
 
 arithmetic_ops = {
     "add": lambda x, y: x + y,
@@ -698,17 +657,16 @@ ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
 
 ?function: "(" pipeline ")"
   | polynom
-  | "count"                -> count
-  | "sum"                  -> sum
-  | "map" function         -> map
-  | "fmap" function +      -> fmap
-  | "bind" function value +    -> bind
-  | "foldl" function value     -> foldl
-  | "wrap" function function +  -> wrap
+  | "count"                        -> count
+  | "sum"                          -> sum
+  | "map" function                 -> map
+  | "mapf" function +              -> mapf
+  | "bind" function function +     -> bind
+  | "foldl" function function      -> foldl
 
 ?polynom: product
-  | polynom "+" product       -> add
-  | polynom "-" product       -> sub
+  | polynom "+" product   -> add
+  | polynom "-" product   -> sub
 
 ?product: power
   | product "*" power     -> mul
@@ -732,68 +690,22 @@ ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
 """
 arithmetic_and_functors_parser = lark.Lark(ARITHMETIC_AND_FUNCTORS_GRAMMAR, start="pipeline")
 
-'''
-#TODO: use same arithmetic functions for composition of functions not only values
-ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
-?function: CNAME
-  | composition
-  | polynom
-  | "map" function                -> map
-  | "fmap" function +             -> fmap
-  | "bind" function function +    -> bind
-  | "foldl" function function     -> foldl
-  | "(" function ")"
-
-?composition: function "|" composition
-  | "(" composition ")"
-
-?polynom: product
-  | polynom "+" product           -> add
-  | polynom "-" product           -> sub
-
-?product: power
-  | product "*" power             -> mul
-  | product "/" power             -> div
-
-?power: value
-  | value "**" power              -> pow
-
-?value: NUMBER                    -> number
-  | "_"                           -> arg
-  | "$" NUMBER                    -> getarg
-  | "-" value                     -> neg
-  | "(" polynom ")"
-
-
-
-%import common.CNAME
-%import common.NUMBER
-
-%import common.WS_INLINE
-%import common.NEWLINE
-%ignore WS_INLINE
-%ignore NEWLINE
-"""
-arithmetic_and_functors_parser = lark.Lark(ARITHMETIC_AND_FUNCTORS_GRAMMAR, start="function")
-'''
 
 def _map(f) -> Callable:
     return lambda x: [f(el) for el in x]
 
-def fmap(*funcs) -> Callable:
+def mapf(*funcs) -> Callable:
     return lambda x: [f(x) for f in funcs]
 
 def foldl(f, init_val) -> Callable:
     return lambda x: functools.reduce(f, x, init_val())
 
+# This bind requires all arguments
 def bind(f, *fargs) -> Callable:
-    return lambda *xs: f(*(g(*xs) for g in fargs), *xs)
+    return lambda *xs: f(*(g(*xs) for g in fargs))
 
 def compile_getarg(ops, tree):
     return (lambda N: lambda *xs: [x for x in xs][N])(int(tree))
-
-def wrap(outer_f, *fargs) -> Callable:
-    return lambda *xs: outer_f(*(g(*xs) for g in fargs))
 
 arithmetic_and_functors_ops = {
     "add": lambda x, y: x + y,
@@ -813,56 +725,67 @@ arithmetic_and_functors_ops = {
     "pipeline": compose_inv,
 
     "map": _map,
-    "fmap": fmap,
+    "mapf": mapf,
 
     "bind": bind,
 
     "foldl": foldl,
-
-    "wrap": wrap,
 }
 
 arithmetic_and_functors_compile_ops = generate_compiler_ops(arithmetic_and_functors_ops)
 
+verbose = False
+test_arithmetic_and_functors = lambda *args, **kvargs: test(arithmetic_and_functors_ops, arithmetic_and_functors_parser, verbose=verbose, *args, **kvargs)
 
-test_arithmetic_and_functors = lambda *args, **kvargs: test(arithmetic_and_functors_ops, arithmetic_and_functors_parser, *args, **kvargs)
+def vtest_af(tests):
+    for text, input, output in tests:
+        test_arithmetic_and_functors(text, input, output)
 
-test_arithmetic_and_functors("10", None, 10, verbose=True)
-test_arithmetic_and_functors("10 + 10", None, 20, verbose=True)
-test_arithmetic_and_functors("(_ + 1) | (_ * 2) | (10 / _) | (_ / 5)", 0, 1, verbose=True)
-test_arithmetic_and_functors("_ + 1 | _ * 2 | 10 / _ | _ / 5", 0, 1, verbose=True)
-test_arithmetic_and_functors("_ + 1 | ((_ * 2) | (10 / _)) | _ / 5", 0, 1, verbose=True)
-test_arithmetic_and_functors("_ + 1 | ((_ * 2) | 10 / _) | _ / 5", 0, 1, verbose=True)
-test_arithmetic_and_functors("_ + 1 | (_ * 2 | 10 / _) | _ / 5", 0, 1, verbose=True)
-test_arithmetic_and_functors("_ + 1 | (_ * 2 | (10 / _)) | _ / 5", 0, 1, verbose=True)
-test_arithmetic_and_functors("count | _ * 2", [0, 1, 2], 6, verbose=True)
-test_arithmetic_and_functors("map (fmap (_) (_) (_) | count) | sum", [{}, {}, {}], 9, verbose=True)
-test_arithmetic_and_functors("map (2 * _ | _ + 1)", [0, 1, 2], [1, 3, 5], verbose=True)
-test_arithmetic_and_functors("fmap (_ + 1) (_ - 1) (_ + 1 | _ * 2)", 0, [1, -1, 2], verbose=True)
-test_arithmetic_and_functors("map (_ + _) | sum", [0, 1, 2], 6, verbose=True)
-test_arithmetic_and_functors("map ($0 + $0) | sum", [0, 1, 2], 6, verbose=True)
-test_arithmetic_and_functors("bind ($0 + $0) 1", None, 2, verbose=True)
-test_arithmetic_and_functors("bind ($0 + $1) 1 2", None, 3, verbose=True)
-test_arithmetic_and_functors("bind ($0 + $1) 1 _", 2, 3, verbose=True)
-test_arithmetic_and_functors("bind ($0 + $1) _ 1", 2, 3, verbose=True)
-test_arithmetic_and_functors("bind ($0 + 1 + $1) 1 _", 1, 3, verbose=True)
-test_arithmetic_and_functors("bind ($0 + $1) 1 ", 2, 3, verbose=True)
-test_arithmetic_and_functors("bind ($0 + 1) 1", None, 2, verbose=True)
-test_arithmetic_and_functors("bind (_ + 1) 1", None, 2, verbose=True)
-test_arithmetic_and_functors("foldl ($0 + $1) 0", [1, 2, 3], 6, verbose=True)
-test_arithmetic_and_functors("foldl ($0 * $1) 1", [1, 2, 3], 6, verbose=True)
+vtest_af([
+    ("10", None, 10),
+    ("10 + 10", None, 20),
+    ("(_ + 1) | (_ * 2) | (10 / _) | (_ / 5)", 0, 1),
+    ("_ + 1 | _ * 2 | 10 / _ | _ / 5", 0, 1),
+    ("_ + 1 | ((_ * 2) | (10 / _)) | _ / 5", 0, 1),
+    ("_ + 1 | ((_ * 2) | 10 / _) | _ / 5", 0, 1),
+    ("_ + 1 | (_ * 2 | 10 / _) | _ / 5", 0, 1),
+    ("_ + 1 | (_ * 2 | (10 / _)) | _ / 5", 0, 1),
+    ("count | _ * 2", [0, 1, 2], 6),
+    ("map (mapf (_) (_) (_) | count) | sum", [{}, {}, {}], 9),
+    ("map (2 * _ | _ + 1)", [0, 1, 2], [1, 3, 5]),
+    ("mapf (_ + 1) (_ - 1) (_ + 1 | _ * 2)", 0, [1, -1, 2]),
+    ("map (_ + _) | sum", [0, 1, 2], 6),
+    ("map ($0 + $0) | sum", [0, 1, 2], 6),
+    ("bind ($0 + $0) 1", None, 2),
+    ("bind ($0 + $1) 1 2", None, 3),
+    ("bind ($0 + $1) 1 _", 2, 3),
+    ("bind ($0 + $1) _ 1", 2, 3),
+    ("bind ($0 + 1 + $1) 1 _", 1, 3),
+    ("bind ($0 + 1) 1", None, 2),
+    ("bind (_ + 1) 1", None, 2),
+    ("foldl ($0*2 + $1 + 1) 0", [1, 2], 7),
+    ("foldl ($0 * $1) 1", [1, 2, 3], 6),
+    ("bind ($0 - $1) sum foldl ($0 + $1) 0", [1, 2, 3], 0),
+    ("bind count (0 | mapf _ _ _)", None, 3),
+    ("bind (mapf _ _ _) _ | count", 0, 3),
+    ("bind count (0 | mapf _ _ _)", None, 3),
+    ("bind ($0 - $1) (foldl ($0 + $1) 0) sum", [1, 2, 3], 0),
+    ("foldl (bind ($0 ** $1) $1 $0) 1", [1, 2], 2),
+    ("foldl ($0 + $1) 0", list(range(10000)), sum(range(10000))),
+    ("sum", list(range(10000)), sum(range(10000))),
+])
 
-test_arithmetic_and_functors("wrap ($1 - $2) sum foldl ($0 + $1) 0", [1, 2, 3], 0, verbose=True)
 
-test_arithmetic_and_functors("wrap ($1 - $2) (_ | sum) bind (foldl ($0 + $1) 0) _", [1, 2, 3], 0, verbose=True)
+#
+# ====================================================================================================
+# 
+# ====================================================================================================
+#
 
 
 
-#TODO: Difference between functors with only functions as parameters like compose_inv
-# and functors with data and function parameters like map?
-# map f x == (map f) x
-# So map just return function that apply function to every item.
-#TODO: What if we have one value and multiple finctions, like [g(x) for g in funcs] - how it called?
+
+
 
 
 """
