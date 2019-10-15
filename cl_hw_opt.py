@@ -652,11 +652,8 @@ if False:
 #
 
 ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
-?pipeline: function
-  | function "|" pipeline
-
-?function: "(" pipeline ")"
-  | polynom
+?function: polynom
+  | function "|" function          -> pipeline
   | "count"                        -> count
   | "sum"                          -> sum
   | "map" function                 -> map
@@ -668,9 +665,12 @@ ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
   | polynom "+" product   -> add
   | polynom "-" product   -> sub
 
-?product: power
-  | product "*" power     -> mul
-  | product "/" power     -> div
+?product: signed_value
+  | product "*" signed_value     -> mul
+  | product "/" signed_value     -> div
+
+?signed_value: power
+  | "-" power             -> neg
 
 ?power: value
   | value "**" power      -> pow
@@ -678,8 +678,7 @@ ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
 ?value: NUMBER            -> number
   | "_"                   -> arg
   | "$" NUMBER            -> getarg
-  | "-" power             -> neg
-  | "(" polynom ")"
+  | "(" function ")"
 
 %import common.NUMBER
 
@@ -688,7 +687,7 @@ ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
 %ignore WS_INLINE
 %ignore NEWLINE
 """
-arithmetic_and_functors_parser = lark.Lark(ARITHMETIC_AND_FUNCTORS_GRAMMAR, start="pipeline")
+arithmetic_and_functors_parser = lark.Lark(ARITHMETIC_AND_FUNCTORS_GRAMMAR, start="function")
 
 
 def _map(f) -> Callable:
@@ -773,6 +772,7 @@ vtest_af([
     ("foldl (bind ($0 ** $1) $1 $0) 1", [1, 2], 2),
     ("foldl ($0 + $1) 0", list(range(10000)), sum(range(10000))),
     ("sum", list(range(10000)), sum(range(10000))),
+    ("(sum) - (foldl ($0 + $1) 0)", [1, 2, 3], 0)
 ])
 
 
