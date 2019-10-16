@@ -579,7 +579,7 @@ test_arith_logic(
     False
 )
 
-if False:
+if True:
     s2 = rand_join_pairs(["+", "-", "*", "/"], ["x", "y", "z", "1", "2", "3", "4"], 100)
     s1 = rand_join_pairs(["==", ">", "<", ">=", "<=", "!="], s2, 100)
     s = rand_join(["and", "or"], s1, 200)

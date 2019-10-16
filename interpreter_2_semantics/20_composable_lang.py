@@ -70,7 +70,6 @@ def compile_func_call(func, compile_arg, ops, tree):
         return func
     
     # tree without children is Token
-    # dirty hack ?
     if len(tree.children) == 0:
         return func
 
@@ -140,23 +139,25 @@ class SyntacticAssociativity(Enum):
     NOT_APPLICABLE = None
     LEFT = -1
     NOT_ASSOCIATIVE = 0,
-    RIGHT = 1
+    RIGHT = 1,
+    FULLY_ASSOCIATIVE = 2,
 
 class SyntacticParantheses(Enum):
     NOT_APPLICABLE = None
     REQUIRED = True
 
-#TODO: Auto arity
-
-SyntacticDescriptor = namedtuple('SyntacticDescriptor', ['token', 'priority', 'order', 'associativity', 'parantheses'], defaults=[
+Syntax = namedtuple('Syntax', ['token', 'priority', 'order', 'associativity', 'parantheses', 'arity'], defaults=[
     0,
     SyntacticOrder.NOT_APPLICABLE,
     SyntacticAssociativity.NOT_APPLICABLE,
-    SyntacticParantheses.NOT_APPLICABLE
+    SyntacticParantheses.NOT_APPLICABLE,
+    None,
 ])
 
-LangOp = namedtuple('LangOp', ['arity', 'syntax', 'op', 'compile_token'], defaults=[_id, None])
+LangOp = namedtuple('LangOp', ['syntax', 'op', 'compile_token'], defaults=[None, None])
 
+def is_associative(op):
+    return op.syntax.associativity in set([SyntacticAssociativity.LEFT, SyntacticAssociativity.RIGHT])
 
 def isnamedtupleinstance(x):
     t = type(x)
@@ -191,48 +192,84 @@ def ops2dict(ops):
 # ====================================================================================================
 #
 
-def merge_ops(outer, inner, priority_shift=True):
-    i_max_prio = max([op.syntax.priority for op in inner.values()])
-    if priority_shift:
-        return {**inner, **{k:v._replace(syntax=v.syntax._replace(priority=v.syntax.priority + i_max_prio + 1)) for k,v in outer.items()}}
-    else:
-        return {**inner, **outer}
 
 
-def merge_ops_tree(ops_tree):
+def generate_grammar_rule(ops, inner_rule_name, rule_name, alias_prefix):
     """
-        Meaning of firt ops tree in list is like in Lisp:
-        [X, Y, Z] - X on (Y and Z) - Y and Z have the same priority, X has lower priority
-        [X, [Y, Z]] - X on Y on Z - Z has the highest priority, Y has lower priority than Z, X has the lowest priority
+        Generates one grammar rule for ops with same priority.
     """
-    if not isinstance(ops_tree, list):
-        return ops_tree
-    head = ops_tree[0]
-    tail = ops_tree[1:]
-    if isinstance(head, list):
-        head = merge_ops_tree(head)
-    t = {}
-    for opst in tail:
-        # merge ops trees from tail into one ops dict
-        if isinstance(opst, list):
-            t = merge_ops(t, merge_ops_tree(opst), priority_shift=False)
+    # every op produce a match for non-terminal 
+    # op key used as alias
+    matches = []
+    plain_ops = {}
+
+    if inner_rule_name is not None:
+        matches.append(([inner_rule_name], None))
+
+    for op_name, op in ops.items():
+        alias = f'f_{alias_prefix}_{op_name}'
+
+        if op.syntax.arity is not None:
+            arity = op.syntax.arity
+        elif op.op is None or not callable(op.op):
+            arity = 0
         else:
-            t = merge_ops(t, opst, priority_shift=False)
-    # merge head ops ontop tail ops
-    return merge_ops(head, t)
+            sig = signature(op.op)
+            arity = len(sig.parameters)
+            multiarity = arity >= 1 and list(sig.parameters.values())[-1].kind == Parameter.VAR_POSITIONAL
+            multiarity_suffix = ["+" if multiarity else ""]
+
+        token = op.syntax.token
+
+        if arity == 0:
+            if '|' in token:
+                match = [f'( {token} )']
+            else:
+                match = [token]
+        else:
+            #TODO: Parantheses of function args
+
+            if arity == 2 and op.syntax.order == SyntacticOrder.INFIX:
+                if op.syntax.associativity == SyntacticAssociativity.RIGHT:
+                    match = [inner_rule_name, token, rule_name]
+                elif op.syntax.associativity == SyntacticAssociativity.LEFT:
+                    match = [rule_name, token, inner_rule_name]
+                elif op.syntax.associativity == SyntacticAssociativity.NOT_ASSOCIATIVE:
+                    match = [inner_rule_name, token, inner_rule_name]
+                elif op.syntax.associativity == SyntacticAssociativity.FULLY_ASSOCIATIVE:
+                    match = [rule_name, token, rule_name]
+                else:
+                    raise Exception(f'ERROR: generate_grammar_rule: invalid "{op_name}" in {ops2dict(ops)}')
+            else:
+                if op.syntax.order == SyntacticOrder.INFIX:
+                    raise Exception(f'ERROR: generate_grammar_rule: invalid "{op_name}" in {ops2dict(ops)}')
+
+                if op.syntax.order == SyntacticOrder.PREFIX:
+                    if op.syntax.associativity == SyntacticAssociativity.RIGHT:
+                        match = [token] + [rule_name]*arity + multiarity_suffix
+                    else:
+                        match = [token] + [inner_rule_name]*arity + multiarity_suffix
+                elif op.syntax.order == SyntacticOrder.POSTFIX:
+                    if op.syntax.associativity == SyntacticAssociativity.LEFT:
+                        match = [rule_name]*arity + multiarity_suffix + [token]
+                    else:
+                        match = [inner_rule_name]*arity + multiarity_suffix + [token]
+                else:
+                    raise Exception(f'ERROR: generate_grammar_rule: invalid "{op_name}" in {ops2dict(ops)}')
+
+        matches.append((match, alias))
+        plain_ops[alias] = (_id if op.op is None else op.op, op.compile_token)
+
+    return matches, plain_ops
 
 
+def join_grammar_rule(inner_rule_names):
+    return [([name], None) for name in inner_rule_names]
 
 
-grammar_footer = """
-%import common.CNAME
-%import common.NUMBER
+def _path2str(path):
+    return '_'.join(map(str, path))
 
-%import common.WS_INLINE
-%import common.NEWLINE
-%ignore WS_INLINE
-%ignore NEWLINE
-"""
 
 def group_ops_prio(ops):
     d = {}
@@ -243,86 +280,185 @@ def group_ops_prio(ops):
     return d
 
 
-def generate_grammar_rule(ops, inner_rule_name, rule_name):
-    # every op produce a match for non-terminal 
-    # op key used as alias
-    matches = []
-
-    if inner_rule_name is not None:
-        matches.append(([inner_rule_name], None))
-
-    for op_name, op in ops.items():
-        if op.arity == 0:
-            if '|' in op.syntax.token:
-                match = [f'( {op.syntax.token} )']
-            else:
-                match = [op.syntax.token]
-        else:
-            #TODO: Multi-arity
-            #TODO: Parantheses of function args
-            token = f'"{op.syntax.token}"'
-            if op.arity == 2 and op.syntax.order == SyntacticOrder.INFIX:
-                if op.syntax.associativity == SyntacticAssociativity.RIGHT:
-                    match = [inner_rule_name, token, rule_name]
-                elif op.syntax.associativity == SyntacticAssociativity.LEFT:
-                    match = [rule_name, token, inner_rule_name]
-                elif op.syntax.associativity == SyntacticAssociativity.NOT_ASSOCIATIVE:
-                    match = [inner_rule_name, token, inner_rule_name]
-                else:
-                    raise Exception(f'ERROR: generate_grammar_rule: invalid "{op_name}" in {ops2dict(ops)}')
-            else:
-                if op.syntax.order == SyntacticOrder.INFIX:
-                    raise Exception(f'ERROR: generate_grammar_rule: invalid "{op_name}" in {ops2dict(ops)}')
-
-                #TODO: When use inner rule name and one this rule name?
-                if op.syntax.order == SyntacticOrder.PREFIX:
-                    match = [token] + [inner_rule_name]*op.arity
-                elif op.syntax.order == SyntacticOrder.POSTFIX:
-                    match = [inner_rule_name]*op.arity + [token]
-                else:
-                    raise Exception(f'ERROR: generate_grammar_rule: invalid "{op_name}" in {ops2dict(ops)}')
-        matches.append((match, op_name))
-
-    return matches
-
-
-def generate_grammar(ops):
-    rules = {} # rule name -> list of pairs (item match: list of terminals and non-terminals, optional alias)
-
+def _generate_grammar_and_ops(ops, inner_rule_name, path):
+    """
+        Generates grammar rules for complete dict of ops.
+    """
+    prefix = _path2str(path)
+    rules = {}
+    plain_ops = {}
+    
     ops_by_prio = group_ops_prio(ops)
-    inner_rule_name = None
+    first_rule_name = None
     for prio in sorted(ops_by_prio):
         # every priority produce a grammar rule
         # e.g. ops of same priority compose one grammar rule
-        rule_name = f'rule_{prio}'
-        rules[rule_name] = generate_grammar_rule(ops_by_prio[prio], inner_rule_name, rule_name)
+        rule_name = f'm_{prefix}_rule_{prio}'
+        if first_rule_name is not None:
+            first_rule_name = rule_name
+        rules[rule_name], rule_plain_ops = generate_grammar_rule(ops_by_prio[prio], inner_rule_name, rule_name, prefix)
+        plain_ops = {**plain_ops, **rule_plain_ops}
         inner_rule_name = rule_name
+ 
+    return rules, rule_name, plain_ops
 
-    rules['rule_0'].append(([f'"(" {rule_name} ")"'], None))
 
+def ops_are_associative(ops_tree):
+    if isinstance(ops_tree, list):
+        ops_tree = ops_tree[0]
+    return functools.reduce(lambda x,y: x or y, [is_associative(op) for _, op in ops_tree.items()], False)
+
+
+def generate_grammar_and_ops(ops_tree, path = [], parenthesised_rule_name=None):
+    """
+        Recursively generates grammar rules for entire subtree represented by ops_tree.
+        Head ops can be only ops dict, not tree.
+    """
+    if not isinstance(ops_tree, list):
+        # ops_tree is a simple ops dict
+        return _generate_grammar_and_ops(ops_tree, None, path)
+
+    rules = {}
+    ops = {}
+
+    # ops_tree is a composition
+    head = ops_tree[0]
+    tail = ops_tree[1:]
+    join_rule_name = f'j_{_path2str(path + [0])}_rule'
+
+    # First create head rules and get head root rule name - start
+    head_rules, head_root_rule_name, head_ops = _generate_grammar_and_ops(head, join_rule_name, path + [0])
+
+    if not ops_are_associative(head):
+        parenthesised_rule_name = None
+    elif parenthesised_rule_name is None:
+        parenthesised_rule_name = head_root_rule_name
+
+    # Process tail items
+    tail_rules = []
+    parentheses_passed = True
+    for index, ops_tree_item in reversed(list(enumerate(tail))):
+        # 0 is head
+        r, s, o = generate_grammar_and_ops(ops_tree_item, path + [index + 1], parenthesised_rule_name)
+        tail_rules.append(s)
+        rules = {**rules, **r}
+        ops = {**ops, **o}
+        parentheses_passed = parentheses_passed and ops_are_associative(ops_tree_item)
+
+    # Join tail items
+    rules[join_rule_name] = join_grammar_rule(tail_rules)
+
+    # Add parentheses match if it was not passed through every subtree
+    if parenthesised_rule_name is not None and not parentheses_passed:
+        rules[join_rule_name] += [([f'"(" {parenthesised_rule_name} ")"'], None)]
+        parenthesised_rule_name = None
+
+    # Finally wrap with head rules
+    rules = {**rules, **head_rules}
+    ops = {**ops, **head_ops}
+
+    return rules, head_root_rule_name, ops
+
+
+
+grammar_footer = """
+%import common.ESCAPED_STRING
+%import common.CNAME
+%import common.NUMBER
+
+%import common.WS_INLINE
+%import common.NEWLINE
+%ignore WS_INLINE
+%ignore NEWLINE
+"""
+
+def grammar2str(rules):
     grammar = grammar_footer
     for rule_name, rule in rules.items():
         rule_str = '\n  | '.join([' '.join(match) + (' -> ' + alias if alias is not None else '') for match, alias in rule])
         grammar = "?" + rule_name + ": " + rule_str + "\n\n" + grammar
 
-    return '\n' + grammar, rule_name
-
-
-def get_plain_ops(ops):
-    return {k : (v.op, v.compile_token) for k, v in ops.items()}
+    return '\n' + grammar
 
 
 def make_compiler(ops_tree):
-    ops = merge_ops_tree(ops_tree)
+    grammar, start_symbol, ops = generate_grammar_and_ops(ops_tree)
+    pprint(ops)
 
-    grammar, start_symbol = generate_grammar(ops)
-    print(grammar)
-    parser = lark.Lark(grammar, start=start_symbol)
+    g_str = grammar2str(grammar)
+    print(g_str)
 
-    cops = generate_compiler_ops(get_plain_ops(ops))
+    parser = lark.Lark(g_str, start=start_symbol)
+
+    cops = generate_compiler_ops(ops)
 
     return (cops, parser)
 
+#
+# ====================================================================================================
+# Test
+# ====================================================================================================
+#
+
+class NodeCounter:
+    def __init__(self):
+        self.node_counter = 0
+        self.subtree_counter = 0
+        self.leaf_counter = 0
+        self.depth = 0
+        self.max_depth = 0
+
+    def visit(self, tree):
+        self.depth += 1
+        if self.max_depth < self.depth:
+            self.max_depth = self.depth
+
+        self.node_counter += 1
+        if isinstance(tree, lark.Tree):
+            self.subtree_counter += 1
+            for node in tree.children:
+                self.visit(node)
+        else:
+            self.leaf_counter += 1
+
+        self.depth -= 1
+
+def count_nodes(tree):
+    nc = NodeCounter()
+    nc.visit(tree)
+    return nc.node_counter, nc.subtree_counter, nc.leaf_counter, nc.max_depth
+ 
+def test(compiler, text, env, result, verbose=False, debug=False):
+    print()
+    if verbose:
+        print(text)
+        print()
+        print(env)
+
+    start = time.process_time()
+    tree = compiler[1].parse(text)
+    parse_elapsed = time.process_time() - start
+    if verbose:
+        print()
+        print(tree.pretty())
+
+    nodes, subtrees, leafs, max_depth = count_nodes(tree)
+    print(f'chars: {len(text)}, nodes: {nodes}, subtrees: {subtrees}, leafs: {leafs}, max_depth: {max_depth}')
+
+    start = time.process_time()
+    f = compile_tree(compiler[0], tree)
+    compile_elapsed = time.process_time() - start
+
+    start = time.process_time()
+    r = f(env)
+    exec_elapsed = time.process_time() - start
+
+    if not debug:
+        assert(result == r)
+
+    print(f"parse: {parse_elapsed}, " 
+          f"compile: {compile_elapsed}, "
+          f"exec: {exec_elapsed}")
 
 #
 # ====================================================================================================
@@ -331,16 +467,16 @@ def make_compiler(ops_tree):
 #
 
 
+#TODO: CNAME vs. Reserved Literals
+
 logic_literals = {
     "false": LangOp(
-        arity=0,
         op=False,
-        syntax=SyntacticDescriptor('"False" | "FALSE" | "false" | "F" | "f"')),
+        syntax=Syntax('"False" | "FALSE" | "false" | "F" | "f"')),
     
     "true": LangOp(
-        arity=0,
         op=True,
-        syntax=SyntacticDescriptor('"True" | "TRUE" | "true" | "T" | "t"')),
+        syntax=Syntax('"True" | "TRUE" | "true" | "T" | "t"')),
 }
 
 
@@ -349,17 +485,15 @@ def compile_const(_, token):
 
 constants = {
     "constant": LangOp(
-        arity=0,
         compile_token=compile_const,
-        syntax=SyntacticDescriptor('CNAME')),
+        syntax=Syntax('CNAME')),
 }
 
 logic = {
     "or": LangOp(
-        arity=2,
         op=lambda x, y: x or y,
-        syntax=SyntacticDescriptor(
-            token="or",
+        syntax=Syntax(
+            token='"or"',
             priority=2,
             order=SyntacticOrder.INFIX,
             associativity=SyntacticAssociativity.LEFT,
@@ -368,10 +502,9 @@ logic = {
     ),
 
     "and": LangOp(
-        arity=2,
         op=lambda x, y: x and y,
-        syntax=SyntacticDescriptor(
-            token="and",
+        syntax=Syntax(
+            token='"and"',
             priority=1,
             order=SyntacticOrder.INFIX,
             associativity=SyntacticAssociativity.LEFT,
@@ -380,13 +513,36 @@ logic = {
     ),
 
     "not": LangOp(
-        arity=1,
         op=lambda x: not x,
-        syntax=SyntacticDescriptor(
-            token="not",
+        syntax=Syntax(
+            token='"not"',
             priority=0,
             order=SyntacticOrder.PREFIX,
             associativity=SyntacticAssociativity.RIGHT,
+            parantheses=SyntacticParantheses.NOT_APPLICABLE
+        )
+    ),
+}
+
+logic_comparison = {
+    "eq": LangOp(
+        op=lambda x, y: x == y,
+        syntax=Syntax(
+            token='"=="',
+            priority=3,
+            order=SyntacticOrder.INFIX,
+            associativity=SyntacticAssociativity.NOT_ASSOCIATIVE,
+            parantheses=SyntacticParantheses.NOT_APPLICABLE
+        )
+    ),
+
+    "neq": LangOp(
+        op=lambda x, y: x != y,
+        syntax=Syntax(
+            token='"!="',
+            priority=3,
+            order=SyntacticOrder.INFIX,
+            associativity=SyntacticAssociativity.NOT_ASSOCIATIVE,
             parantheses=SyntacticParantheses.NOT_APPLICABLE
         )
     ),
@@ -410,19 +566,17 @@ print(f({'x': True, 'y': False, 'z': False}))
 #
 
 
-numbers = {
+number_literals = {
     "number": LangOp(
-        arity=0,
         compile_token=lambda _, token: value_closure(float(token)),
-        syntax=SyntacticDescriptor('NUMBER'))
+        syntax=Syntax('NUMBER'))
 }
 
-arithmetic = {
+number_arithmetic = {
     "sub": LangOp(
-        arity=2,
         op=lambda x, y: x - y,
-        syntax=SyntacticDescriptor(
-            token="-",
+        syntax=Syntax(
+            token='"-"',
             priority=3,
             order=SyntacticOrder.INFIX,
             associativity=SyntacticAssociativity.LEFT,
@@ -431,10 +585,9 @@ arithmetic = {
     ),
 
     "add": LangOp(
-        arity=2,
         op=lambda x, y: x + y,
-        syntax=SyntacticDescriptor(
-            token="+",
+        syntax=Syntax(
+            token='"+"',
             priority=3,
             order=SyntacticOrder.INFIX,
             associativity=SyntacticAssociativity.LEFT,
@@ -443,10 +596,9 @@ arithmetic = {
     ),
 
     "div": LangOp(
-        arity=2,
         op=lambda x, y: x / y,
-        syntax=SyntacticDescriptor(
-            token="/",
+        syntax=Syntax(
+            token='"/"',
             priority=2,
             order=SyntacticOrder.INFIX,
             associativity=SyntacticAssociativity.LEFT,
@@ -455,10 +607,9 @@ arithmetic = {
     ),
 
     "mul": LangOp(
-        arity=2,
         op=lambda x, y: x * y,
-        syntax=SyntacticDescriptor(
-            token="*",
+        syntax=Syntax(
+            token='"*"',
             priority=2,
             order=SyntacticOrder.INFIX,
             associativity=SyntacticAssociativity.LEFT,
@@ -467,10 +618,9 @@ arithmetic = {
     ),
     
     "neg": LangOp(
-        arity=1,
         op=lambda x: -x,
-        syntax=SyntacticDescriptor(
-            token="-",
+        syntax=Syntax(
+            token='"-"',
             priority=1,
             order=SyntacticOrder.PREFIX,
             associativity=SyntacticAssociativity.RIGHT,
@@ -479,10 +629,9 @@ arithmetic = {
     ),
     
     "pow": LangOp(
-        arity=2,
         op=lambda x, y: x ** y,
-        syntax=SyntacticDescriptor(
-            token="^",
+        syntax=Syntax(
+            token='"^"',
             priority=0,
             order=SyntacticOrder.INFIX,
             associativity=SyntacticAssociativity.RIGHT,
@@ -492,12 +641,30 @@ arithmetic = {
 }
 
 
+string_literals = {
+    "string": LangOp(
+        compile_token=lambda _, token: value_closure(str(token)),
+        syntax=Syntax('ESCAPED_STRING'))
+}
+
+string_arithmetic = {
+    "add": LangOp(
+        op=lambda x, y: x + y,
+        syntax=Syntax(
+            token='"+"',
+            priority=0,
+            order=SyntacticOrder.INFIX,
+            associativity=SyntacticAssociativity.LEFT,
+            parantheses=SyntacticParantheses.NOT_APPLICABLE
+        )
+    )
+}
+
 comparison = {
     "eq": LangOp(
-        arity=2,
         op=lambda x, y: x == y,
-        syntax=SyntacticDescriptor(
-            token="==",
+        syntax=Syntax(
+            token='"=="',
             priority=0,
             order=SyntacticOrder.INFIX,
             associativity=SyntacticAssociativity.NOT_ASSOCIATIVE,
@@ -506,10 +673,9 @@ comparison = {
     ),
 
     "neq": LangOp(
-        arity=2,
         op=lambda x, y: x != y,
-        syntax=SyntacticDescriptor(
-            token="!=",
+        syntax=Syntax(
+            token='"!="',
             priority=0,
             order=SyntacticOrder.INFIX,
             associativity=SyntacticAssociativity.NOT_ASSOCIATIVE,
@@ -518,10 +684,9 @@ comparison = {
     ),
 
     "gt": LangOp(
-        arity=2,
         op=lambda x, y: x > y,
-        syntax=SyntacticDescriptor(
-            token=">",
+        syntax=Syntax(
+            token='">"',
             priority=0,
             order=SyntacticOrder.INFIX,
             associativity=SyntacticAssociativity.NOT_ASSOCIATIVE,
@@ -530,10 +695,9 @@ comparison = {
     ),
 
     "gte": LangOp(
-        arity=2,
         op=lambda x, y: x >= y,
-        syntax=SyntacticDescriptor(
-            token=">=",
+        syntax=Syntax(
+            token='">="',
             priority=0,
             order=SyntacticOrder.INFIX,
             associativity=SyntacticAssociativity.NOT_ASSOCIATIVE,
@@ -542,10 +706,9 @@ comparison = {
     ),
 
     "lt": LangOp(
-        arity=2,
         op=lambda x, y: x < y,
-        syntax=SyntacticDescriptor(
-            token="<",
+        syntax=Syntax(
+            token='"<"',
             priority=0,
             order=SyntacticOrder.INFIX,
             associativity=SyntacticAssociativity.NOT_ASSOCIATIVE,
@@ -554,10 +717,9 @@ comparison = {
     ),
 
     "lte": LangOp(
-        arity=2,
         op=lambda x, y: x <= y,
-        syntax=SyntacticDescriptor(
-            token="<=",
+        syntax=Syntax(
+            token='"<="',
             priority=0,
             order=SyntacticOrder.INFIX,
             associativity=SyntacticAssociativity.NOT_ASSOCIATIVE,
@@ -567,12 +729,181 @@ comparison = {
 }
 
 
-c2 = make_compiler([logic, [comparison, [arithmetic, numbers, constants]]])
+c2 = make_compiler([logic,
+                        [comparison,
+                            [number_arithmetic,
+                                number_literals,
+                                constants]], 
+                        [comparison,
+                            [string_arithmetic,
+                                string_literals,
+                                constants]],
+                        logic_literals,
+                        constants,
+                        ])
 
-text = "f * g + e > d and a < b and (a == b or a * c >= b ^ 2)"
+
+text = '(f * g + e > d and a < b and a == b or a * c >= b ^ 2 or "AA" <= "Aa") and (a != b) and (1 == 1) and ((2+2)*2 == 6)'
 env = {'a': 100, 'b': 200, 'c': 3, 'd': 9768, 'e': 2334, 'g': -1, 'f': -5.5}
 
 f = compile(c2, text)
 
 print(f(env))
+
+
+#
+# ====================================================================================================
+# 
+# ====================================================================================================
+#
+
+def compile_getarg(ops, tree):
+    return (lambda N: lambda *xs: [x for x in xs][N])(int(tree))
+
+args = {
+    "arg": LangOp(
+        op=lambda *xs: [x for x in xs][0],
+        syntax=Syntax(
+            token='"_"',
+            arity=0,
+        )
+    ),
+
+    "getarg": LangOp(
+        compile_token=compile_getarg,
+        syntax=Syntax(
+            token='"$" NUMBER',
+        )
+    ),
+}
+
+def _map(f) -> Callable:
+    return lambda x: [f(el) for el in x]
+
+def mapf(*funcs) -> Callable:
+    return lambda x: [f(x) for f in funcs]
+
+def foldl(f, init_val) -> Callable:
+    return lambda x: functools.reduce(f, x, init_val())
+
+# This bind requires all arguments
+def bind(f, *fargs) -> Callable:
+    return lambda *xs: f(*(g(*xs) for g in fargs))
+
+def compose_inv(g, f) -> Callable:
+    return lambda x: f(g(x))
+
+list_functions = {
+    "count": LangOp(
+        op=lambda x: len(x),
+        syntax=Syntax(
+            token='"count"',
+            arity=0,
+        )
+    ),
+
+    "sum": LangOp(
+        op=lambda x: sum(x),
+        syntax=Syntax(
+            token='"sum"',
+            arity=0,
+        )
+    ),
+}
+
+functors = {
+    "pipeline": LangOp(
+        op=compose_inv,
+        syntax=Syntax(
+            token='"|"',
+            order=SyntacticOrder.INFIX,
+            associativity=SyntacticAssociativity.FULLY_ASSOCIATIVE,
+        )
+    ),
+
+    "map": LangOp(
+        op=_map,
+        syntax=Syntax(
+            token='"map"',
+            order=SyntacticOrder.PREFIX,
+            associativity=SyntacticAssociativity.RIGHT,
+        )
+    ),
+
+    "mapf": LangOp(
+        op=mapf,
+        syntax=Syntax(
+            token='"mapf"',
+            order=SyntacticOrder.PREFIX,
+            associativity=SyntacticAssociativity.RIGHT,
+        )
+    ),
+
+    "bind": LangOp(
+        op=bind,
+        syntax=Syntax(
+            token='"bind"',
+            order=SyntacticOrder.PREFIX,
+            associativity=SyntacticAssociativity.RIGHT,
+        )
+    ),
+
+    "foldl": LangOp(
+        op=foldl,
+        syntax=Syntax(
+            token='"foldl"',
+            order=SyntacticOrder.PREFIX,
+            associativity=SyntacticAssociativity.RIGHT,
+        )
+    ),
+    
+}
+
+
+
+c3 = make_compiler([{**list_functions, **functors}, [number_arithmetic, number_literals, args]])
+
+verbose = True
+test_arithmetic_and_functors = lambda *args, **kvargs: test(c3, verbose=verbose, *args, **kvargs)
+
+def vtest_af(tests):
+    for text, input, output in tests:
+        test_arithmetic_and_functors(text, input, output)
+
+vtest_af([
+    ("10", None, 10),
+    ("10 + 10", None, 20),
+    ("(_ + 1) | (_ * 2) | (10 / _) | (_ / 5)", 0, 1),
+    ("_ + 1 | _ * 2 | 10 / _ | _ / 5", 0, 1),
+    ("_ + 1 | ((_ * 2) | (10 / _)) | _ / 5", 0, 1),
+    ("_ + 1 | ((_ * 2) | 10 / _) | _ / 5", 0, 1),
+    ("_ + 1 | (_ * 2 | 10 / _) | _ / 5", 0, 1),
+    ("_ + 1 | (_ * 2 | (10 / _)) | _ / 5", 0, 1),
+    ("count | _ * 2", [0, 1, 2], 6),
+    ("map (mapf (_) (_) (_) | count) | sum", [{}, {}, {}], 9),
+    ("map (2 * _ | _ + 1)", [0, 1, 2], [1, 3, 5]),
+    ("mapf (_ + 1) (_ - 1) (_ + 1 | _ * 2)", 0, [1, -1, 2]),
+    ("map (_ + _) | sum", [0, 1, 2], 6),
+    ("map ($0 + $0) | sum", [0, 1, 2], 6),
+    ("bind ($0 + $0) 1", None, 2),
+    ("bind ($0 + $1) 1 2", None, 3),
+    ("bind ($0 + $1) 1 _", 2, 3),
+    ("bind ($0 + $1) _ 1", 2, 3),
+    ("bind ($0 + 1 + $1) 1 _", 1, 3),
+    ("bind ($0 + 1) 1", None, 2),
+    ("bind (_ + 1) 1", None, 2),
+    ("foldl ($0*2 + $1 + 1) 0", [1, 2], 7),
+    ("foldl ($0 * $1) 1", [1, 2, 3], 6),
+    ("bind ($0 - $1) sum foldl ($0 + $1) 0", [1, 2, 3], 0),
+    ("bind count (0 | mapf _ _ _)", None, 3),
+    ("bind (mapf _ _ _) _ | count", 0, 3),
+    ("bind count (0 | mapf _ _ _)", None, 3),
+    ("bind ($0 - $1) (foldl ($0 + $1) 0) sum", [1, 2, 3], 0),
+    ("foldl (bind ($0 ^ $1) $1 $0) 1", [1, 2], 2),
+    ("foldl ($0 + $1) 0", list(range(10000)), sum(range(10000))),
+    ("sum", list(range(10000)), sum(range(10000))),
+    ("(sum) - (foldl ($0 + $1) 0)", [1, 2, 3], 0),
+    ("map (map (_ ^ 2) | sum)", [[1,2], [0,1], [-2,-1]], [5, 1, 5]),
+])
+
 
