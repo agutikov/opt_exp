@@ -1,5 +1,4 @@
 
-
 ;(set-option :print-success true) 
 ;(set-option :produce-unsat-cores true)
 ;(set-option :produce-models true)
@@ -44,8 +43,6 @@
 
 
 (assert (<= (to_real required_space) (* total_max_effective_space max_usage)))
-
-
 
 
 

@@ -15,13 +15,16 @@
 # 03 Refactoring
 
 
-# 04 Lambda-Compilation vs Interpretation
+# 04 Lambda-Composition vs Interpretation
 
 
-# 04 Composable Ops and Grammar
+# 05 Python vs. C++, Lark vs. Boost::Spirit
 
 
-# 05 Generate Grammar from Ops - Composable Languages
+# 06 Composable Ops and Grammar
+
+
+# 07 Generate Grammar from Ops - Composable Languages
 
 
 ## Composability, Types and Category Theory
