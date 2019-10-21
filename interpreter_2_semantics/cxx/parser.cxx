@@ -3,7 +3,7 @@
 
 int main()
 {
-    std::string storage = "85676";
+    std::string storage = "2 + -3^x - 2*(3*y - -4*z^g^u)";
 
     typedef client::calculator_grammar<std::string::const_iterator> calculator_grammar;
     calculator_grammar g;
@@ -15,19 +15,14 @@ int main()
     bool r = phrase_parse(iter, end, g, space, tree);
 
     if (r && iter == end) {
-        std::cout << "-------------------------\n";
-        std::cout << "Parsing succeeded\n";
-        std::cout << "-------------------------\n";
         client::ast_tree_printer printer;
         printer(tree);
+        std::cout << std::endl;
         return 0;
     } else {
         std::string::const_iterator some = iter+30;
         std::string context(iter, (some>end)?end:some);
-        std::cout << "-------------------------\n";
-        std::cout << "Parsing failed\n";
-        std::cout << "stopped at: \": " << context << "...\"\n";
-        std::cout << "-------------------------\n";
+        std::cout << "stopped at: \"" << context << "\"\n";
         return 1;
     }
 }

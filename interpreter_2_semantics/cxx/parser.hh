@@ -28,13 +28,14 @@ namespace client
     typedef
         boost::variant<
             boost::recursive_wrapper<ast_tree>,  // subtree
-            std::string                          // or value in leaf node
+            std::string,                         // or value in leaf node
+            double
         >
     ast_node;
 
     struct ast_tree
     {
-        std::string name;                      // tag name
+        std::string name = "default";                      // tag name
         std::vector<ast_node> children;        // children
     };
 }
@@ -47,7 +48,7 @@ BOOST_FUSION_ADAPT_STRUCT(
 
 namespace client
 {
-    int const tabsize = 2;
+    int const tabsize = 4;
 
     void tab(int indent)
     {
@@ -81,8 +82,12 @@ namespace client
 
         void operator()(std::string const& value) const
         {
-            tab(indent+tabsize);
-            std::cout << "value: \"" << value << '"' << std::endl;
+            std::cout << "  \"" << value << '"';
+        }
+
+        void operator()(double value) const
+        {
+            std::cout << "  \"" << value << '"';
         }
 
         int indent;
@@ -90,18 +95,15 @@ namespace client
 
     void ast_tree_printer::operator()(ast_tree const& ast) const
     {
+        std::cout << std::endl;
         tab(indent);
-        std::cout << "tag: " << ast.name << std::endl;
-        tab(indent);
-        std::cout << '{' << std::endl;
-
+        std::cout << ast.name;
+        
         BOOST_FOREACH(ast_node const& node, ast.children)
         {
             boost::apply_visitor(ast_node_printer(indent), node);
         }
 
-        tab(indent);
-        std::cout << '}' << std::endl;
     }
 
 
@@ -110,64 +112,93 @@ namespace client
       : qi::grammar<Iterator, ast_tree(), ascii::space_type>
     {
         calculator_grammar()
-          : calculator_grammar::base_type(ast)
+          : calculator_grammar::base_type(sum)
         {
             using qi::lit;
             using qi::lexeme;
+            using qi::raw;
             using ascii::char_;
-            using boost::spirit::double_;
+            using ascii::alnum;
+            using ascii::alpha;
+            using ascii::digit;
+            using qi::double_;
+            using qi::real_parser;
             using ascii::string;
             using namespace qi::labels;
+            using phoenix::at_c;
+            using phoenix::push_back;
+            using qi::debug;
 
-            const_ref = string(_r1)         [_val += _1]];
-            number = double_                [_val += _1];;
-/*
-            value = number | const_ref | '(' >> sum >> ')';
+            CNAME %= raw[lexeme[alpha >> *(alnum | '_')]];
+            NUMBER %= double_;
 
-            pow = value >> '^' >> pow;
+            number = NUMBER                             [at_c<0>(_val) = "number", push_back(at_c<1>(_val), _1)];
+            const_ref = CNAME                           [at_c<0>(_val) = "const", push_back(at_c<1>(_val), _1)];
 
-            pow_val = value | pow;
+            value = number                              [_val = _1]
+                | const_ref                             [_val = _1]
+                | '(' >> sum                            [_val = _1]
+                      >> ')';
 
-            neg = '-' >> pow_val;
+            pow = value                                 [push_back(at_c<1>(_val), _1)]
+                  >> '^' >> pow                         [at_c<0>(_val) = "pow", push_back(at_c<1>(_val), _1)]
+                | value                                 [_val = _1];
 
-            neg_val = pow_val | neg;
+            neg = '-' >> pow                            [at_c<0>(_val) = "neg", push_back(at_c<1>(_val), _1)]
+                | pow                                   [_val = _1];
 
-            mul = neg_val >> '*' >> product;
-            div = neg_val >> '/' >> product;
+            product = neg                               [push_back(at_c<1>(_val), _1)]
+                >>
+                (   ('*' >> product                     [at_c<0>(_val) = "mul", push_back(at_c<1>(_val), _1)]  )
+                  | ('/' >> product                     [at_c<0>(_val) = "div", push_back(at_c<1>(_val), _1)]  )
+                )
+                | neg                                   [_val = _1];
 
-            product = neg_val | div | mul;
+            sum = product                               [push_back(at_c<1>(_val), _1)]
+                >>
+                (   ('+' >> sum                         [at_c<0>(_val) = "add", push_back(at_c<1>(_val), _1)]  )
+                  | ('-' >> sum                         [at_c<0>(_val) = "sub", push_back(at_c<1>(_val), _1)]  )
+                )
+                | product                               [_val = _1];
 
-            add = product >> '+' >> sum;
-            sub = product >> '-' >> sum;
+            /*
+            sum.name("sum");
+            product.name("product");
+            neg.name("neg");
+            pow.name("pow");
+            value.name("value");
+            number.name("number");
+            const_ref.name("const");
 
-            sum = product | add | sub;
 
-            ast = sum;
+            debug(number);
+            debug(const_ref);
+            debug(value);
+            debug(pow);
+            debug(neg);
+            debug(product);
+            debug(sum);
             */
-            ast = *(const_ref | number)     [push_back(at_c<1>(_val), _1)];
+
         }
 
-        qi::rule<Iterator, ast_tree(), ascii::space_type> ast;
-/*
-        qi::rule<Iterator, ast_tree(), ascii::space_type> sum;
-        qi::rule<Iterator, ast_tree(), ascii::space_type> sub;
-        qi::rule<Iterator, ast_tree(), ascii::space_type> add;
+        qi::rule<Iterator, std::string(), ascii::space_type> CNAME;
+        qi::rule<Iterator, double, ascii::space_type> NUMBER;
+
+        qi::rule<Iterator, ast_tree(), ascii::space_type> number;
+        qi::rule<Iterator, ast_tree(), ascii::space_type> const_ref;
+
+        qi::rule<Iterator, ast_tree(), ascii::space_type> value;
+
+        qi::rule<Iterator, ast_tree(), ascii::space_type> pow;
+
+        qi::rule<Iterator, ast_tree(), ascii::space_type> neg;
 
         qi::rule<Iterator, ast_tree(), ascii::space_type> product;
-        qi::rule<Iterator, ast_tree(), ascii::space_type> div;
-        qi::rule<Iterator, ast_tree(), ascii::space_type> mul;
 
-        qi::rule<Iterator, ast_tree(), ascii::space_type> neg_val;
-        qi::rule<Iterator, ast_tree(), ascii::space_type> neg;
-        qi::rule<Iterator, ast_tree(), ascii::space_type> pow_val;
-        qi::rule<Iterator, ast_tree(), ascii::space_type> pow;
-        qi::rule<Iterator, ast_tree(), ascii::space_type> value;
-*/
-        qi::rule<Iterator, std::string(), ascii::space_type> const_ref;
-        qi::rule<Iterator, std::string(), ascii::space_type> number;
+        qi::rule<Iterator, ast_tree(), ascii::space_type> sum;
 
     };
-    //]
 }
 
 
