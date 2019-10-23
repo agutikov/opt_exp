@@ -14,9 +14,10 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <exception>
 
 
-namespace client
+namespace ast
 {
     namespace fusion = boost::fusion;
     namespace phoenix = boost::phoenix;
@@ -41,14 +42,14 @@ namespace client
 }
 
 BOOST_FUSION_ADAPT_STRUCT(
-    client::ast_tree,
+    ast::ast_tree,
     (std::string, name)
-    (std::vector<client::ast_node>, children)
+    (std::vector<ast::ast_node>, children)
 )
 
-namespace client
+namespace ast
 {
-    int const tabsize = 4;
+    int const tabsize = 2;
 
     void tab(int indent)
     {
@@ -82,12 +83,12 @@ namespace client
 
         void operator()(std::string const& value) const
         {
-            std::cout << "  \"" << value << '"';
+            std::cout << "\t" << value;
         }
 
         void operator()(double value) const
         {
-            std::cout << "  \"" << value << '"';
+            std::cout << "\t" << value;
         }
 
         int indent;
@@ -201,4 +202,27 @@ namespace client
     };
 }
 
+template<typename Iterator, template <typename Iter> class grammar>
+ast::ast_tree parse(Iterator begin, Iterator end)
+{
+    typedef grammar<Iterator> G;
+    G g;
+    ast::ast_tree tree;
+    using boost::spirit::ascii::space;
+
+    bool r = phrase_parse(begin, end, g, space, tree);
+
+    if (r && begin == end) {
+        ast::ast_tree_printer printer;
+        printer(tree);
+        std::cout << std::endl;
+        return tree;
+    } else {
+        std::string::const_iterator some = begin+30;
+        std::string context(begin, (some>end)?end:some);
+        std::cout << "stopped at: \"" << context << "\"\n";
+        
+        throw std::invalid_argument(std::string("parser failed at: \"") + context + std::string("\""));
+    }
+}
 

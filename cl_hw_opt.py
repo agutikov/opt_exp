@@ -430,15 +430,15 @@ assert(not compile_cat_predicate("a.b.c.d or x.y.z.r or not x.y.z")(parse_catego
 
 ARITHMETIC_GRAMMAR = """
 ?sum: product
-  | sum "+" product       -> add
-  | sum "-" product       -> sub
+  | product "+" sum       -> add
+  | product "-" sum       -> sub
 
 ?product: power
-  | product "*" power     -> mul
-  | product "/" power     -> div
+  | power "*" product     -> mul
+  | power "/" product     -> div
 
 ?power: value
-  | value "**" power      -> pow
+  | value "^" power      -> pow
 
 ?value: NUMBER            -> number
   | NAME                  -> const
@@ -488,9 +488,9 @@ assert(1.1 == compile_arithmetic("1.1")({}))
 
 test(arithmetic_ops, arithmetic_parser, "x * 2 + -y", {'x': 1, 'y': 2}, 0)
 test(arithmetic_ops, arithmetic_parser, "x / 2 - 1 / y", {'x': 1, 'y': 2}, 0)
-test(arithmetic_ops, arithmetic_parser, "x ** y - 1", {'x': 1, 'y': 2}, 0)
+test(arithmetic_ops, arithmetic_parser, "x ^ y - 1", {'x': 1, 'y': 2}, 0)
 
-
+test(arithmetic_ops, arithmetic_parser, "2 + -3^x - 2*(3*y - -4*z^g^u)", {'x': 1, 'y': 10, 'z': 2, 'g': 2, 'u': 3}, -2109, verbose=True)
 
 #
 # ====================================================================================================
@@ -535,7 +535,7 @@ assert(compile_arithmetic_predicate("0 > -1")({}))
 assert(compile_arithmetic_predicate("2 >= 2")({}))
 assert(compile_arithmetic_predicate("-2 < 2")({}))
 assert(compile_arithmetic_predicate("0 <= 0")({}))
-test(arithmetic_predicate_ops, arithmetic_predicate_parser, "(a ** 2 ** 2 - 10) > b * (a ** (c / 2))", {'a': 100, 'b': 200, 'c': 3}, True)
+test(arithmetic_predicate_ops, arithmetic_predicate_parser, "(a^2^2 - 10) > b * (a ^ (c / 2))", {'a': 100, 'b': 200, 'c': 3}, True)
 
 #
 # ====================================================================================================
@@ -673,7 +673,7 @@ ARITHMETIC_AND_FUNCTORS_GRAMMAR = """
   | "-" power             -> neg
 
 ?power: value
-  | value "**" power      -> pow
+  | value "^" power      -> pow
 
 ?value: NUMBER            -> number
   | "_"                   -> arg
@@ -769,7 +769,7 @@ vtest_af([
     ("bind (mapf _ _ _) _ | count", 0, 3),
     ("bind count (0 | mapf _ _ _)", None, 3),
     ("bind ($0 - $1) (foldl ($0 + $1) 0) sum", [1, 2, 3], 0),
-    ("foldl (bind ($0 ** $1) $1 $0) 1", [1, 2], 2),
+    ("foldl (bind ($0 ^ $1) $1 $0) 1", [1, 2], 2),
     ("foldl ($0 + $1) 0", list(range(10000)), sum(range(10000))),
     ("sum", list(range(10000)), sum(range(10000))),
     ("(sum) - (foldl ($0 + $1) 0)", [1, 2, 3], 0)

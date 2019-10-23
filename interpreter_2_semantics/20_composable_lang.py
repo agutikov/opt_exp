@@ -84,7 +84,7 @@ def compile_func_call(func, compile_arg, ops, tree):
 
     arg_funcs = [compile_arg(ops, arg) for arg in tree.children]
 
-    if func == _id:
+    if func == _id or func is None:
         # optimization :)
         return arg_funcs[0]
 
