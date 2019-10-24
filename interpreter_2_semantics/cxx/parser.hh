@@ -226,9 +226,6 @@ ast_parse(
     bool r = phrase_parse(begin, end, g, space, tree);
 
     if (r && begin == end) {
-        ast::ast_tree_printer printer;
-        printer(tree);
-        std::cout << std::endl;
         return tree;
     } else {
         std::string::const_iterator some = begin+30;
@@ -237,5 +234,17 @@ ast_parse(
         
         throw std::invalid_argument(std::string("parser failed at: \"") + context + std::string("\""));
     }
+}
+
+ast::ast_tree ast_parse(const std::string &text, const ast::grammar<std::string::const_iterator> &g)
+{
+    return ast_parse(text.begin(), text.end(), g);
+}
+
+void print_tree(const ast::ast_tree &tree)
+{
+    ast::ast_tree_printer printer;
+    printer(tree);
+    std::cout << std::endl;
 }
 

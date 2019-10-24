@@ -291,14 +291,13 @@ def test(ops, parser, text, env, result, verbose=False, debug=False):
     r = interpret_tree(ops, tree, env)
     interpret_elapsed = time.process_time() - start
 
+    if verbose:
+        print(f"result: {r}")
     if not debug:
         assert(result == r)
 
-    print(f"parse: {parse_elapsed}, " 
-          f"compile: {compile_elapsed}, "
-          f"exec: {exec_elapsed}, "
-          f"interpret: {interpret_elapsed}, "
-          f"speedup: {interpret_elapsed/exec_elapsed}")
+    print("parse: %.3f us, compile: %.3f us, exec: %.3f us, interpret: %.3f us, speedup: %.2f" %
+        (parse_elapsed * 10**6, compile_elapsed * 10**6, exec_elapsed * 10**6, interpret_elapsed * 10**6, interpret_elapsed/exec_elapsed))
 
 #
 # ====================================================================================================
@@ -323,7 +322,7 @@ def rand_join_pairs(j_arr, v_arr, count):
 def rand_opt(s, prob=0.2):
     return s if random.random() < prob else ""
 
-def rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth=0.8):
+def rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth=0.8, parantheses_prob=0.5):
     if min_depth == 0 and random.random() > rand_depth:
         max_depth = 0
     else:
@@ -333,7 +332,15 @@ def rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth=0.8)
 
     v1 = random.choice(v_arr) if max_depth == 0 else rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth)
     v2 = random.choice(v_arr) if max_depth == 0 else rand_join_depth(j2_arr, j1_arr, v_arr, min_depth, max_depth, rand_depth)
-    return rand_opt(random.choice(j1_arr)) + v1 + random.choice(j2_arr) + rand_opt(random.choice(j1_arr)) + v2
+
+    v = rand_opt(random.choice(j1_arr)) + v1 + random.choice(j2_arr) + rand_opt(random.choice(j1_arr)) + v2
+    if random.random() < parantheses_prob:
+        v = f'({v})'
+    return v
+
+
+s = rand_join_depth([" + ", " - ", " * ", " / "], ["", " -"], ["x", "y", "z", "0.1", "-1", "10", "999", "4096"], 5, 5, 0.9)
+print(s)
 
 #
 # ====================================================================================================
@@ -493,7 +500,11 @@ test(arithmetic_ops, arithmetic_parser, "x * 2 + -y", {'x': 1, 'y': 2}, 0)
 test(arithmetic_ops, arithmetic_parser, "x / 2 - 1 / y", {'x': 1, 'y': 2}, 0)
 test(arithmetic_ops, arithmetic_parser, "x ^ y - 1", {'x': 1, 'y': 2}, 0)
 
-test(arithmetic_ops, arithmetic_parser, "2 + -3^x - 2*(3*y - -4*z^g^u)", {'x': 1, 'y': 10, 'z': 2, 'g': 2, 'u': 3}, -2109, verbose=True)
+test(arithmetic_ops, arithmetic_parser, "2 + -3^x - 2*(3*y - -4*z^g^u)", {'x': 1, 'y': 10, 'z': 2, 'g': 2, 'u': 3}, -2109, verbose=False)
+
+text = "((z * y) - 4096 + 999) - (x * -1) / 0.1 - 999 - (4096 - -1 + (10 - 4096) * ((999 + x) * (z + 4096))) / ( -z / x / x - -1 + (4096 * y - z - -1)) - (999 + -1 / (0.1 + 10)) - ( -(4096 / -1) / ( -y +  -0.1))"
+
+test(arithmetic_ops, arithmetic_parser, text, {'x': 1, 'y': 10, 'z': 2}, 0, verbose=False, debug=True)
 
 print(f'\n{"="*80}\n'*2)
 
@@ -584,7 +595,7 @@ test_arith_logic(
     False
 )
 
-if True:
+if False:
     s2 = rand_join_pairs(["+", "-", "*", "/"], ["x", "y", "z", "1", "2", "3", "4"], 100)
     s1 = rand_join_pairs(["==", ">", "<", ">=", "<=", "!="], s2, 100)
     s = rand_join(["and", "or"], s1, 200)

@@ -10,6 +10,8 @@
 #include <utility>
 #include <exception>
 #include <cmath>
+#include <chrono>
+#include <ratio>
 
 #include "parser.hh"
 
@@ -177,29 +179,73 @@ ops_t ops = {
  *============================================================================================
  */
 
+double us(std::chrono::steady_clock::duration d)
+{
+    return double(std::chrono::duration_cast<std::chrono::nanoseconds>(d).count()) / 1000.0;
+}
 
+void test(
+    std::shared_ptr<ast_node_compiler::compiler_visitors_t> cops,
+    const ast::grammar<std::string::const_iterator> &g,
+    const std::string &text,
+    const env_t &env,
+    double r,
+    bool verbose=false,
+    bool debug=false)
+{
+    if (verbose) {
+        printf("\n%s\n", text.c_str());
+    }
+
+    auto start_parse = std::chrono::steady_clock::now();
+    auto tree = ast_parse(text, g);
+    auto elapsed_parse = std::chrono::steady_clock::now() - start_parse;
+
+    if (verbose) {
+        print_tree(tree);
+    }
+
+    auto start_compile = std::chrono::steady_clock::now();
+    compiled_f f = ast_node_compiler::compile_tree(cops, tree);
+    auto elapsed_compile = std::chrono::steady_clock::now() - start_compile;
+
+    auto start_exec = std::chrono::steady_clock::now();
+    std::any result = f(env);
+    auto elapsed_exec = std::chrono::steady_clock::now() - start_exec;
+
+    printf("parse: %.3f us, compile: %.3f us, exec: %.3f us\n",
+        us(elapsed_parse),
+        us(elapsed_compile),
+        us(elapsed_exec));
+
+    if (verbose) {
+        printf("result: %f\n", std::any_cast<double>(result));
+    }
+    if (!debug) {
+        assert(r == std::any_cast<double>(result));
+    }
+}
+
+
+/*============================================================================================
+ * 
+ * 
+ *============================================================================================
+ */
 
 int main()
 {
-
     auto cops = ast_node_compiler::generate_compiler_ops(ops);
-
     ast::calculator_grammar<std::string::const_iterator> g;
 
+    test(cops, g, "x * 2 + -y", {{"x", 1.0}, {"y", 2.0}}, 0.0);
+    test(cops, g, "x / 2 - 1 / y", {{"x", 1.0}, {"y", 2.0}}, 0.0);
+    test(cops, g, "x ^ y - 1", {{"x", 1.0}, {"y", 2.0}}, 0.0);
+    test(cops, g, "2 + -3^x - 2*(3*y - -4*z^g^u)", {{"x", 1.0}, {"y", 10.0}, {"z", 2.0}, {"g", 2.0}, {"u", 3.0}}, -2109.0);
 
-
-    std::string text = "1 + 2 * 3";
-    auto tree = ast_parse<std::string::const_iterator>(text.begin(), text.end(), g);
-
-    compiled_f f = ast_node_compiler::compile_tree(cops, tree);
-
-
-    env_t e = {};
-
-    std::any result = f(e);
-
-    printf("%f\n", std::any_cast<double>(result));
-
+    std::string text = "((z * y) - 4096 + 999) - (x * -1) / 0.1 - 999 - (4096 - -1 + (10 - 4096) * ((999 + x) * (z + 4096))) / ( -z / x / x - -1 + (4096 * y - z - -1)) - (999 + -1 / (0.1 + 10)) - ( -(4096 / -1) / ( -y +  -0.1))";
+    
+    test(cops, g, text, {{"x", 1.0}, {"y", 10.0}, {"z", 2.0}}, 0.0, false, true);
 
 
     return 0;
