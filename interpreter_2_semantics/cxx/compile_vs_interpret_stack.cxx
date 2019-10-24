@@ -12,24 +12,11 @@
 #include <cmath>
 #include <chrono>
 #include <ratio>
+#include <stack>
 
 #include "parser.hh"
 
 
-#if 0
-// WOW! Is it possible?
-auto id = [](auto x){ return x; };
-
-template<typename T, typename ...Targs>
-auto value_closure(T x)
-{
-    return [x](Targs... xs){ return x; };
-}
-#endif
-/*
-    Possibly it will be hard to implement multi-parameter lambda,
-    so let's try to pass parameters as vector or tuple of std::any.
-*/
 
 
 typedef std::function<std::any(const std::vector<std::any>&)> op_f;
@@ -139,39 +126,54 @@ struct ast_node_compiler : boost::static_visitor<compiled_f>
  *============================================================================================
  */
 
+
+typedef std::function<void(std::stack<std::any>&)> stack_op_f;
+
+typedef std::function<void(std::stack<std::any>&, const env_t&)> compiled_stack_f;
+
+typedef std::function<compiled_stack_f(const ast::ast_node &)> compile_node_stack_f;
+
+typedef std::map<std::string, std::pair<stack_op_f, compile_node_stack_f>> stack_ops_t;
+
+
 struct ast_node_interpreter
 {
-    ast_node_interpreter(const ops_t &ops) :
+    ast_node_interpreter(const stack_ops_t &ops) :
         ops(ops)
     {}
 
-    std::any interpret_tree(const ast::ast_tree &tree, const env_t &env)
+    void interpret_tree(const ast::ast_tree &tree, const env_t &env)
     {
         // get op functions
         auto op = ops.find(tree.name)->second;
         auto func = op.first;
         auto compile_token = op.second;
 
-        std::vector<std::any> args;
         if (func == nullptr) {
             // compile_token returns function compiled from token
             auto f = compile_token(tree.children[0]);
-            std::any value = f(env);
-            return value;
+            f(stack, env);
         } else {
             // interpret args
             BOOST_FOREACH(ast::ast_node const& node, tree.children) {
-                std::any arg = interpret_tree(boost::get<ast::ast_tree>(node), env);
-                args.push_back(arg);
+                interpret_tree(boost::get<ast::ast_tree>(node), env);
             }
 
             // interpret function call
-            return func(args);
+            return func(stack);
         }
-
     }
 
-    const ops_t &ops;
+    std::any pop_result()
+    {
+        auto tmp = stack.top();
+        stack.pop();
+        return tmp;
+    }
+
+    std::stack<std::any> stack;
+
+    const stack_ops_t &ops;
 };
 
 
@@ -190,6 +192,7 @@ double us(std::chrono::steady_clock::duration d)
 
 void test(
     const ops_t &ops,
+    const stack_ops_t &stack_ops,
     const ast::grammar<std::string::const_iterator> &g,
     const std::string &text,
     const env_t &env,
@@ -220,9 +223,10 @@ void test(
     auto elapsed_exec = std::chrono::steady_clock::now() - start_exec;
 
 
-    ast_node_interpreter interpreter(ops);
+    ast_node_interpreter interpreter(stack_ops);
     auto start_interpret = std::chrono::steady_clock::now();
-    std::any result_interpret = interpreter.interpret_tree(tree, env);
+    interpreter.interpret_tree(tree, env);
+    std::any result_interpret = interpreter.pop_result();
     auto elapsed_interpret = std::chrono::steady_clock::now() - start_compile;
 
     printf("parse: %.3f us, compile: %.3f us, exec: %.3f us, interpret: %.3f us, speedup: %.2f\n",
@@ -273,24 +277,94 @@ ops_t ops = {
 };
 
 
+compile_node_stack_f compile_number_stack = [](const ast::ast_node &node) -> compiled_stack_f
+{
+    auto value = boost::get<double>(node);
+    return [value](std::stack<std::any>& stack, const env_t&){
+        stack.push(std::any(value));
+    };
+};
+
+compile_node_stack_f compile_const_stack = [](const ast::ast_node &node) -> compiled_stack_f
+{
+    auto value = boost::get<std::string>(node);
+    return [value](std::stack<std::any>& stack, const env_t& e){
+        stack.push(e.find(value)->second);
+    };
+};
+
+stack_ops_t stack_ops = {
+    {"number", {nullptr, compile_number_stack}},
+
+    {"const", {nullptr, compile_const_stack}},
+
+    {"pow", {[](std::stack<std::any>& stack){
+        std::any arg1 = stack.top();
+        stack.pop();
+        std::any arg0 = stack.top();
+        stack.pop();
+        stack.push(std::any(pow(std::any_cast<double>(arg0), std::any_cast<double>(arg1)))); 
+    }, nullptr}},
+
+    {"neg", {[](std::stack<std::any>& stack){
+        std::any arg0 = stack.top();
+        stack.pop();
+        stack.push(std::any(- std::any_cast<double>(arg0)));
+    }, nullptr}},
+
+    {"mul", {[](std::stack<std::any>& stack){
+        std::any arg1 = stack.top();
+        stack.pop();
+        std::any arg0 = stack.top();
+        stack.pop();
+        stack.push(std::any(std::any_cast<double>(arg0) * std::any_cast<double>(arg1)));
+    }, nullptr}},
+
+    {"div", {[](std::stack<std::any>& stack){
+        std::any arg1 = stack.top();
+        stack.pop();
+        std::any arg0 = stack.top();
+        stack.pop();
+        stack.push(std::any(std::any_cast<double>(arg0) / std::any_cast<double>(arg1)));
+    }, nullptr}},
+
+    {"add", {[](std::stack<std::any>& stack){
+        std::any arg1 = stack.top();
+        stack.pop();
+        std::any arg0 = stack.top();
+        stack.pop();
+        stack.push(std::any(std::any_cast<double>(arg0) + std::any_cast<double>(arg1)));
+    }, nullptr}},
+
+    {"sub", {[](std::stack<std::any>& stack){
+        std::any arg1 = stack.top();
+        stack.pop();
+        std::any arg0 = stack.top();
+        stack.pop();
+        stack.push(std::any(std::any_cast<double>(arg0) - std::any_cast<double>(arg1)));
+    }, nullptr}},
+};
+
+
 /*============================================================================================
  * 
  * 
  *============================================================================================
  */
 
+
 int main()
 {
     ast::calculator_grammar<std::string::const_iterator> g;
 
-    test(ops, g, "x * 2 + -y", {{"x", 1.0}, {"y", 2.0}}, 0.0);
-    test(ops, g, "x / 2 - 1 / y", {{"x", 1.0}, {"y", 2.0}}, 0.0);
-    test(ops, g, "x ^ y - 1", {{"x", 1.0}, {"y", 2.0}}, 0.0);
-    test(ops, g, "2 + -3^x - 2*(3*y - -4*z^g^u)", {{"x", 1.0}, {"y", 10.0}, {"z", 2.0}, {"g", 2.0}, {"u", 3.0}}, -2109.0);
+    test(ops, stack_ops, g, "x * 2 + -y", {{"x", 1.0}, {"y", 2.0}}, 0.0);
+    test(ops, stack_ops, g, "x / 2 - 1 / y", {{"x", 1.0}, {"y", 2.0}}, 0.0);
+    test(ops, stack_ops, g, "x ^ y - 1", {{"x", 1.0}, {"y", 2.0}}, 0.0);
+    test(ops, stack_ops, g, "2 + -3^x - 2*(3*y - -4*z^g^u)", {{"x", 1.0}, {"y", 10.0}, {"z", 2.0}, {"g", 2.0}, {"u", 3.0}}, -2109.0);
 
     std::string text = "((z * y) - 4096 + 999) - (x * -1) / 0.1 - 999 - (4096 - -1 + (10 - 4096) * ((999 + x) * (z + 4096))) / ( -z / x / x - -1 + (4096 * y - z - -1)) - (999 + -1 / (0.1 + 10)) - ( -(4096 / -1) / ( -y +  -0.1))";
     
-    test(ops, g, text, {{"x", 1.0}, {"y", 10.0}, {"z", 2.0}}, 0.0, false, true);
+    test(ops, stack_ops, g, text, {{"x", 1.0}, {"y", 10.0}, {"z", 2.0}}, 0.0, false, true);
 
 
     return 0;

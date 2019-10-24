@@ -15,21 +15,10 @@
 
 #include "parser.hh"
 
+//TODO: 1) different implementations of lambdas depending on number of args (with or without checking at compile time)
 
-#if 0
-// WOW! Is it possible?
-auto id = [](auto x){ return x; };
-
-template<typename T, typename ...Targs>
-auto value_closure(T x)
-{
-    return [x](Targs... xs){ return x; };
-}
-#endif
-/*
-    Possibly it will be hard to implement multi-parameter lambda,
-    so let's try to pass parameters as vector or tuple of std::any.
-*/
+//TODO: 2) generic lambdas with curring
+//TODO: https://stackoverflow.com/questions/25885893/how-to-create-a-variadic-generic-lambda
 
 
 typedef std::function<std::any(const std::vector<std::any>&)> op_f;
@@ -139,42 +128,6 @@ struct ast_node_compiler : boost::static_visitor<compiled_f>
  *============================================================================================
  */
 
-struct ast_node_interpreter
-{
-    ast_node_interpreter(const ops_t &ops) :
-        ops(ops)
-    {}
-
-    std::any interpret_tree(const ast::ast_tree &tree, const env_t &env)
-    {
-        // get op functions
-        auto op = ops.find(tree.name)->second;
-        auto func = op.first;
-        auto compile_token = op.second;
-
-        std::vector<std::any> args;
-        if (func == nullptr) {
-            // compile_token returns function compiled from token
-            auto f = compile_token(tree.children[0]);
-            std::any value = f(env);
-            return value;
-        } else {
-            // interpret args
-            BOOST_FOREACH(ast::ast_node const& node, tree.children) {
-                std::any arg = interpret_tree(boost::get<ast::ast_tree>(node), env);
-                args.push_back(arg);
-            }
-
-            // interpret function call
-            return func(args);
-        }
-
-    }
-
-    const ops_t &ops;
-};
-
-
 
 
 /*============================================================================================
@@ -220,17 +173,10 @@ void test(
     auto elapsed_exec = std::chrono::steady_clock::now() - start_exec;
 
 
-    ast_node_interpreter interpreter(ops);
-    auto start_interpret = std::chrono::steady_clock::now();
-    std::any result_interpret = interpreter.interpret_tree(tree, env);
-    auto elapsed_interpret = std::chrono::steady_clock::now() - start_compile;
-
-    printf("parse: %.3f us, compile: %.3f us, exec: %.3f us, interpret: %.3f us, speedup: %.2f\n",
+    printf("parse: %.3f us, compile: %.3f us, exec: %.3f us\n",
         us(elapsed_parse),
         us(elapsed_compile),
-        us(elapsed_exec),
-        us(elapsed_interpret),
-        us(elapsed_interpret)/us(elapsed_exec));
+        us(elapsed_exec));
 
     if (verbose) {
         printf("result: %f\n", std::any_cast<double>(result_exec));
