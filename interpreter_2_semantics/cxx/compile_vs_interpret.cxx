@@ -40,32 +40,48 @@ typedef std::function<compiled_f(ast::ast_node)> compile_node_f;
 
 typedef std::map<std::string, std::pair<op_f, compile_node_f>> ops_t;
 
-typedef std::map<std::string, std::shared_ptr<boost::static_visitor<compiled_f>>> compiler_visitors_t;
-
-
-compiled_f compile_tree(std::weak_ptr<compiler_visitors_t> ops, const ast::ast_node &tree)
-{
-    struct node_name : boost::static_visitor<std::string>
-    {
-        std::string operator()(const ast::ast_tree &ast) { return ast.name; }
-        std::string operator()(const std::string &value) { return value; }
-        std::string operator()(double value) { throw std::invalid_argument("ERROR: node_name::operator()(double) called"); }
-    };
-    static node_name get_name;
-
-    // first apply visitor that returns string
-    std::string name = boost::apply_visitor(get_name, tree);
-
-    // then select compile visitor from ops
-    std::shared_ptr<boost::static_visitor<compiled_f>> op = ops.lock()->find(name)->second;
-
-    // then apply compile visitor to this node
-    return boost::apply_visitor(op, tree);
-}
-
 
 struct ast_node_compiler : boost::static_visitor<compiled_f>
 {
+    typedef std::map<std::string, std::shared_ptr<ast_node_compiler>> compiler_visitors_t;
+
+    static std::string get_node_name(const ast::ast_node &tree)
+    {
+        struct node_name : boost::static_visitor<std::string>
+        {
+            std::string operator()(const ast::ast_tree &ast) { return ast.name; }
+            std::string operator()(const std::string &value) { return value; }
+            std::string operator()(double value) { throw std::invalid_argument("ERROR: node_name::operator()(double) called"); }
+        };
+        static node_name get_name;
+
+        return boost::apply_visitor(get_name, tree);
+    }
+
+    static compiled_f compile_tree(std::weak_ptr<compiler_visitors_t> ops, const ast::ast_node &tree)
+    {
+        // first apply visitor that returns string
+        std::string name = get_node_name(tree);
+
+        // then select compile visitor from ops
+        std::shared_ptr<ast_node_compiler> op = ops.lock()->find(name)->second;
+
+        // then apply compile visitor to this node
+        return boost::apply_visitor(*(op.get()), tree);
+    }
+
+    static std::shared_ptr<compiler_visitors_t> generate_compiler_ops(ops_t ops)
+    {
+        auto m = std::make_shared<compiler_visitors_t>();
+
+        for (const auto &op : ops) {
+            auto c = std::make_shared<ast_node_compiler>(op.second.first, op.second.second, m);
+            m->emplace(op.first, c);
+        }
+
+        return m;
+    }
+
     ast_node_compiler(op_f func, compile_node_f compile_token, std::shared_ptr<compiler_visitors_t> ops) :
         func(func),
         compile_token(compile_token),
@@ -116,16 +132,6 @@ struct ast_node_compiler : boost::static_visitor<compiled_f>
 };
 
 
-std::shared_ptr<compiler_visitors_t> generate_compiler_ops(ops_t ops)
-{
-    auto m = std::make_shared<compiler_visitors_t>();
-
-    for (auto op : ops) {
-        m->emplace(op.first, ast_node_compiler(op.second.first, op.second.second, m));
-    }
-
-    return m;
-}
 
 
 
@@ -176,7 +182,23 @@ ops_t ops = {
 int main()
 {
 
+    auto cops = ast_node_compiler::generate_compiler_ops(ops);
 
+    ast::calculator_grammar<std::string::const_iterator> g;
+
+
+
+    std::string text = "1 + 2 * 3";
+    auto tree = ast_parse<std::string::const_iterator>(text.begin(), text.end(), g);
+
+    compiled_f f = ast_node_compiler::compile_tree(cops, tree);
+
+
+    env_t e = {};
+
+    std::any result = f(e);
+
+    printf("%f\n", std::any_cast<double>(result));
 
 
 

@@ -107,13 +107,21 @@ namespace ast
 
     }
 
-
     template <typename Iterator>
-    struct calculator_grammar
+    struct grammar
       : qi::grammar<Iterator, ast_tree(), ascii::space_type>
     {
+        grammar() : grammar::base_type(start)
+        {}
+
+        qi::rule<Iterator, ast_tree(), ascii::space_type> start;
+    };
+
+
+    template <typename Iterator>
+    struct calculator_grammar : ast::grammar<Iterator>
+    {
         calculator_grammar()
-          : calculator_grammar::base_type(sum)
         {
             using qi::lit;
             using qi::lexeme;
@@ -181,6 +189,9 @@ namespace ast
             debug(sum);
             */
 
+           this->start = sum[_val = _1];
+           // TODO: Why compiler not allow this:
+           // start = sum[_val = _1];
         }
 
         qi::rule<Iterator, std::string(), ascii::space_type> CNAME;
@@ -198,15 +209,17 @@ namespace ast
         qi::rule<Iterator, ast_tree(), ascii::space_type> product;
 
         qi::rule<Iterator, ast_tree(), ascii::space_type> sum;
-
     };
+
 }
 
-template<typename Iterator, template <typename Iter> class grammar>
-ast::ast_tree parse(Iterator begin, Iterator end)
+template<typename Iterator>
+ast::ast_tree
+ast_parse(
+    Iterator begin,
+    Iterator end,
+    const ast::grammar<Iterator> &g)
 {
-    typedef grammar<Iterator> G;
-    G g;
     ast::ast_tree tree;
     using boost::spirit::ascii::space;
 

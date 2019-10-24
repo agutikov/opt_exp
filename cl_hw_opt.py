@@ -9,6 +9,7 @@ import time
 import random
 import functools
 
+
 """
 =====================================================================================================
 Units
@@ -486,11 +487,15 @@ assert(0 == compile_arithmetic("0")({}))
 assert(-1 == compile_arithmetic("-1")({}))
 assert(1.1 == compile_arithmetic("1.1")({}))
 
+print(f'{"="*80}\n{" "*20}Arithmetic\n{"="*80}')
+
 test(arithmetic_ops, arithmetic_parser, "x * 2 + -y", {'x': 1, 'y': 2}, 0)
 test(arithmetic_ops, arithmetic_parser, "x / 2 - 1 / y", {'x': 1, 'y': 2}, 0)
 test(arithmetic_ops, arithmetic_parser, "x ^ y - 1", {'x': 1, 'y': 2}, 0)
 
 test(arithmetic_ops, arithmetic_parser, "2 + -3^x - 2*(3*y - -4*z^g^u)", {'x': 1, 'y': 10, 'z': 2, 'g': 2, 'u': 3}, -2109, verbose=True)
+
+print(f'\n{"="*80}\n'*2)
 
 #
 # ====================================================================================================
