@@ -15,13 +15,69 @@
 
 #include "parser.hh"
 
-//TODO: 1) different implementations of lambdas depending on number of args (with or without checking at compile time)
 
 //TODO: 2) generic lambdas with curring
 //TODO: https://stackoverflow.com/questions/25885893/how-to-create-a-variadic-generic-lambda
 
 
-typedef std::function<std::any(const std::vector<std::any>&)> op_f;
+
+
+/*
+
+
+template <typename T>
+T add(T x) { return x; }
+
+template <typename T, typename ...Ts>
+T add(T head, Ts... tail) { return head + add(tail...); }
+
+TODO: And what?
+
+template <typename T>
+std::any adder(T v1) {
+    return std::function<std::any(T)>(
+        [v1] (T v2) { return std::any(v1 + v2); }
+    );   
+}
+
+template <typename T>
+T apply(std::function<std::any(T)> func, const std::vector<T> &v)
+{
+    std::any f;
+    size_t i = 0;
+    for (; i < v.size()-1; i++) {
+        func = std::any_cast<decltype(func)>(func(v[i]));
+    }
+    return std::any_cast<T>(func(v[i]));
+}
+
+int main()
+{
+    std::cout << add(1, 2, 3, 4, 5) << std::endl;
+    
+    std::vector<int> v = {5, 6};
+    std::cout << apply<int>(adder<int>, v) << std::endl;
+    
+    return 0;
+}
+
+
+
+*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+typedef std::any op_f;
 
 typedef std::map<std::string, std::any> env_t;
 
@@ -81,6 +137,8 @@ struct ast_node_compiler : boost::static_visitor<compiled_f>
 
     compiled_f operator()(ast::ast_tree const& ast)
     {
+        //std::cout << ast.name << std::endl;
+
         // compile args
         std::vector<compiled_f> args;
         BOOST_FOREACH(ast::ast_node const& node, ast.children) {
@@ -88,22 +146,28 @@ struct ast_node_compiler : boost::static_visitor<compiled_f>
             args.push_back(arg_f);
         }
 
+        //std::cout << args.size() << std::endl;
+
         // return compiled argument
-        if (func == nullptr) {
+        if (compile_token != nullptr) {
             return args[0];
         }
         
+        //std::cout << "call" << std::endl;
+
         // compile function call
-        return [_func = func, args] (const env_t& e) -> std::any {
-            std::vector<std::any> a;
-
-            // calculate args
-            std::transform(args.begin(), args.end(), std::back_inserter(a), 
-                [e](compiled_f f){ return f(e); });
-
-            // return result of calling func on calculated args
-            return _func(a);
-        };
+        // different implementations of lambdas depending on number of args (with or without checking at compile time)
+        if (args.size() == 1) {
+            return [_func = func, arg0 = args[0]] (const env_t& e) -> std::any {
+                return std::any_cast<std::function<std::any(std::any)>>(_func)(arg0(e));
+            };
+        } else if (args.size() == 2) {
+            return [_func = func, arg0 = args[0], arg1 = args[1]] (const env_t& e) -> std::any {
+                return std::any_cast<std::function<std::any(std::any, std::any)>>(_func)(arg0(e), arg1(e));
+            };
+        } else {
+            throw std::invalid_argument("ERROR: ast_node_compiler::operator()(ast::ast_tree const&) not supported number of function arguments");
+        }
     }
 
     compiled_f operator()(std::string const& value)
@@ -168,6 +232,8 @@ void test(
     compiled_f f = ast_node_compiler::compile_tree(cops, tree);
     auto elapsed_compile = std::chrono::steady_clock::now() - start_compile;
 
+    //std::cout << "compiled" << std::endl;
+
     auto start_exec = std::chrono::steady_clock::now();
     std::any result_exec = f(env);
     auto elapsed_exec = std::chrono::steady_clock::now() - start_exec;
@@ -207,15 +273,47 @@ compile_node_f compile_const = [](const ast::ast_node &node) -> compiled_f
     };
 };
 
+
+//TODO: std::optional
 ops_t ops = {
     {"number", {nullptr, compile_number}},
     {"const", {nullptr, compile_const}},
-    {"pow", {[](const std::vector<std::any>& args){ return std::any(pow(std::any_cast<double>(args[0]), std::any_cast<double>(args[1]))); }, nullptr}},
-    {"neg", {[](const std::vector<std::any>& args){ return std::any(- std::any_cast<double>(args[0])); }, nullptr}},
-    {"mul", {[](const std::vector<std::any>& args){ return std::any(std::any_cast<double>(args[0]) * std::any_cast<double>(args[1])); }, nullptr}},
-    {"div", {[](const std::vector<std::any>& args){ return std::any(std::any_cast<double>(args[0]) / std::any_cast<double>(args[1])); }, nullptr}},
-    {"add", {[](const std::vector<std::any>& args){ return std::any(std::any_cast<double>(args[0]) + std::any_cast<double>(args[1])); }, nullptr}},
-    {"sub", {[](const std::vector<std::any>& args){ return std::any(std::any_cast<double>(args[0]) - std::any_cast<double>(args[1])); }, nullptr}},
+
+    {"pow", {
+        std::function<std::any(std::any, std::any)>(
+            [](std::any a, std::any b){ return std::any(pow(std::any_cast<double>(a), std::any_cast<double>(b))); }
+        ), nullptr}
+    },
+
+    {"neg", {
+        std::function<std::any(std::any)>(
+            [](std::any a){ return std::any(- std::any_cast<double>(a)); }
+        ), nullptr}
+    },
+
+    {"mul", {
+        std::function<std::any(std::any, std::any)>(
+            [](std::any a, std::any b){ return std::any(std::any_cast<double>(a) * std::any_cast<double>(b)); }
+        ), nullptr}
+    },
+
+    {"div", {
+        std::function<std::any(std::any, std::any)>(
+            [](std::any a, std::any b){ return std::any(std::any_cast<double>(a) / std::any_cast<double>(b)); }
+        ), nullptr}
+    },
+
+    {"add", {
+        std::function<std::any(std::any, std::any)>(
+            [](std::any a, std::any b){ return std::any(std::any_cast<double>(a) + std::any_cast<double>(b)); }
+        ), nullptr}
+    },
+
+    {"sub", {
+        std::function<std::any(std::any, std::any)>(
+            [](std::any a, std::any b){ return std::any(std::any_cast<double>(a) - std::any_cast<double>(b)); }
+        ), nullptr}
+    },
 };
 
 
