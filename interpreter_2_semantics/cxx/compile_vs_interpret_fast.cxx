@@ -20,63 +20,6 @@
 //TODO: https://stackoverflow.com/questions/25885893/how-to-create-a-variadic-generic-lambda
 
 
-
-
-/*
-
-
-template <typename T>
-T add(T x) { return x; }
-
-template <typename T, typename ...Ts>
-T add(T head, Ts... tail) { return head + add(tail...); }
-
-TODO: And what?
-
-template <typename T>
-std::any adder(T v1) {
-    return std::function<std::any(T)>(
-        [v1] (T v2) { return std::any(v1 + v2); }
-    );   
-}
-
-template <typename T>
-T apply(std::function<std::any(T)> func, const std::vector<T> &v)
-{
-    std::any f;
-    size_t i = 0;
-    for (; i < v.size()-1; i++) {
-        func = std::any_cast<decltype(func)>(func(v[i]));
-    }
-    return std::any_cast<T>(func(v[i]));
-}
-
-int main()
-{
-    std::cout << add(1, 2, 3, 4, 5) << std::endl;
-    
-    std::vector<int> v = {5, 6};
-    std::cout << apply<int>(adder<int>, v) << std::endl;
-    
-    return 0;
-}
-
-
-
-*/
-
-
-
-
-
-
-
-
-
-
-
-
-
 typedef std::any op_f;
 
 typedef std::map<std::string, std::any> env_t;
@@ -133,12 +76,14 @@ struct ast_node_compiler : boost::static_visitor<compiled_f>
         func(func),
         compile_token(compile_token),
         ops(ops)
-    {}
+    {
+        if (!func.has_value() && compile_token == nullptr) {
+            throw std::invalid_argument("ERROR: ast_node_compiler: At least func or compile_token must be provided.");
+        }
+    }
 
     compiled_f operator()(ast::ast_tree const& ast)
     {
-        //std::cout << ast.name << std::endl;
-
         // compile args
         std::vector<compiled_f> args;
         BOOST_FOREACH(ast::ast_node const& node, ast.children) {
@@ -146,16 +91,13 @@ struct ast_node_compiler : boost::static_visitor<compiled_f>
             args.push_back(arg_f);
         }
 
-        //std::cout << args.size() << std::endl;
-
         // return compiled argument
-        if (compile_token != nullptr) {
+        if (!func.has_value()) {
             return args[0];
         }
-        
-        //std::cout << "call" << std::endl;
 
         // compile function call
+        // The fastest way would be to use call stack directly.
         // different implementations of lambdas depending on number of args (with or without checking at compile time)
         if (args.size() == 1) {
             return [_func = func, arg0 = args[0]] (const env_t& e) -> std::any {
@@ -274,10 +216,9 @@ compile_node_f compile_const = [](const ast::ast_node &node) -> compiled_f
 };
 
 
-//TODO: std::optional
 ops_t ops = {
-    {"number", {nullptr, compile_number}},
-    {"const", {nullptr, compile_const}},
+    {"number", {{}, compile_number}},
+    {"const", {{}, compile_const}},
 
     {"pow", {
         std::function<std::any(std::any, std::any)>(
@@ -336,6 +277,12 @@ int main()
     
     test(ops, g, text, {{"x", 1.0}, {"y", 10.0}, {"z", 2.0}}, 0.0, false, true);
 
+
+    while (text.size() < 5000) {
+        text += " + " + text;
+    }
+
+    test(ops, g, text, {{"x", 1.0}, {"y", 10.0}, {"z", 2.0}}, 0.0, false, true);
 
     return 0;
 }

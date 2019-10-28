@@ -506,6 +506,11 @@ text = "((z * y) - 4096 + 999) - (x * -1) / 0.1 - 999 - (4096 - -1 + (10 - 4096)
 
 test(arithmetic_ops, arithmetic_parser, text, {'x': 1, 'y': 10, 'z': 2}, 0, verbose=False, debug=True)
 
+while len(text) < 5000:
+    text += " + " + text
+
+test(arithmetic_ops, arithmetic_parser, text, {'x': 1, 'y': 10, 'z': 2}, 0, verbose=False, debug=True)
+
 print(f'\n{"="*80}\n'*2)
 
 #
